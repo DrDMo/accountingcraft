@@ -51,7 +51,7 @@ const DEFAULT_ACCOUNTS: &[(&str, &str, &str, Option<&str>)] = &[
     ("3000", "Owner's Contributions", "equity", None),
     ("3100", "Owner's Draw", "equity", None),
     ("3200", "Retained Earnings", "equity", None),
-    ("3900", "Opening Balance Equity", "equity", None),
+    ("3900", "Opening Balance Equity", "equity", Some("opening")),
     ("4000", "Sales", "income", Some("sales")),
     ("4100", "Service Income", "income", None),
     ("4200", "Product Sales", "income", None),
@@ -475,6 +475,15 @@ impl Books {
             Ok(())
             })?;
         }
+        // Older books: Opening Balance Equity becomes a system account (found by key, can't be deleted).
+        books.db.execute(
+            "INSERT OR IGNORE INTO accounts(number, name, kind) SELECT '3900', 'Opening Balance Equity', 'equity' WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE system = 'opening')",
+            [],
+        )?;
+        books.db.execute(
+            "UPDATE accounts SET system = 'opening' WHERE name = 'Opening Balance Equity' AND system IS NULL AND NOT EXISTS (SELECT 1 FROM accounts WHERE system = 'opening')",
+            [],
+        )?;
         books.seed_templates()?;
         Ok(books)
     }
@@ -1282,22 +1291,24 @@ impl Books {
                     .with_timezone(&chrono::Local)
                     .format("%Y-%m-%d")
                     .to_string();
-                let cents = parse_cents(&s(t, "amount")).ok_or(format!("bad amount in transaction {key}"))?;
+                let Some(cents) = parse_cents(&s(t, "amount")) else {
+                    skipped += 1; // unreadable amount; leave it for a later sync rather than block the rest
+                    continue;
+                };
                 let memo = [s(t, "description"), s(t, "payee")].into_iter().find(|m| !m.is_empty()).unwrap_or_default();
                 // Rows in a locked (filed) period are skipped for good, so they never block later syncs.
                 let locked = self.check_open(&date).is_err();
-                let entry = match cents {
-                    _ if locked => None,
-                    0 => None,
-                    _ => Some(self.post_import(&date, &memo, bank, cents).map_err(|e| e.to_string())?),
-                };
+                self.atomic(|| {
+                    let entry = if locked || cents == 0 { None } else { Some(self.post_import(&date, &memo, bank, cents)?) };
+                    self.db.execute("INSERT INTO feed_txns(feed_id, entry_id) VALUES (?1, ?2)", params![key, entry])?;
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())?;
                 if locked {
                     skipped += 1;
-                    self.db.execute("INSERT INTO feed_txns(feed_id, entry_id) VALUES (?1, NULL)", [&key]).map_err(|e| e.to_string())?;
-                    continue;
+                } else {
+                    imported += 1;
                 }
-                self.db.execute("INSERT INTO feed_txns(feed_id, entry_id) VALUES (?1, ?2)", params![key, entry]).map_err(|e| e.to_string())?;
-                imported += 1;
             }
         }
         Ok((imported, skipped))

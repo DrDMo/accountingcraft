@@ -64,7 +64,7 @@ fn ok(status: std::io::Result<std::process::ExitStatus>) -> Result<(), String> {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn thunderbird(to: &str, subject: &str, body: &str, attachment: &Path) -> String {
     let q = |s: &str| s.replace('\'', "\u{2019}");
-    let url = format!("file:///{}", attachment.display().to_string().replace('\\', "/").trim_start_matches('/'));
+    let url = format!("file:///{}", attachment.display().to_string().replace('\\', "/").replace(' ', "%20").trim_start_matches('/'));
     format!("to='{}',subject='{}',body='{}',attachment='{}'", q(to), q(subject), q(body), q(&url))
 }
 

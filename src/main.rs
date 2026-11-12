@@ -655,6 +655,10 @@ impl App {
     fn open_receipt(&mut self, entry: i64) {
         let r = self.books.attachment(entry).map_err(|e| e.to_string()).and_then(|a| {
             let (name, data) = a.ok_or("no receipt on this transaction")?;
+            let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+            if !["pdf", "png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "tif", "tiff"].contains(&ext.as_str()) {
+                return Err(format!("{name} isn't a picture or PDF, so it wasn't opened (it could be a program)."));
+            }
             let safe: String = name.chars().map(|c| if c.is_alphanumeric() || ".-_".contains(c) { c } else { '_' }).collect();
             let path = std::env::temp_dir().join(format!("AccountingCraft-receipt-{entry}-{safe}"));
             std::fs::write(&path, data).map_err(|e| e.to_string())?;
@@ -1194,9 +1198,11 @@ impl App {
             skip = ui.button(if left > 1 { "Skip this one" } else { "Cancel" }).clicked();
         });
         if let Some(id) = pick {
-            let (name, data) = self.receipts.remove(0);
+            let (name, data) = self.receipts[0].clone();
             let r = self.books.attach(id, &name, &data);
-            self.done(r, &format!("Attached the receipt {name}."));
+            if self.done(r, &format!("Attached the receipt {name}.")) {
+                self.receipts.remove(0);
+            }
         } else if skip {
             self.receipts.remove(0);
         }
@@ -1208,7 +1214,7 @@ impl App {
     /// New books: three steps to real numbers. Each ticks itself off; the card goes away when all
     /// three are done or the person hides it.
     fn get_started(&mut self, ui: &mut egui::Ui) {
-        let opening = self.accounts.iter().find(|a| a.name == "Opening Balance Equity").map(|a| a.id);
+        let opening = self.accounts.iter().find(|a| a.system.as_deref() == Some("opening")).map(|a| a.id);
         let has_opening = self.entries.iter().any(|e| e.lines.iter().any(|l| Some(l.1) == opening));
         let has_activity = self.entries.iter().any(|e| !e.lines.iter().any(|l| Some(l.1) == opening));
         let steps = [!self.settings.name.is_empty(), has_opening, has_activity];
@@ -1236,7 +1242,7 @@ impl App {
                 mark(ui, steps[1], 2, "Starting balances");
                 ui::label(ui, "What's in each bank account (or owed on each card) on the day you start.");
             });
-            if !steps[1] {
+            {
                 ui.horizontal(|ui| {
                     ui.add_space(28.0);
                     let banks: Vec<(i64, String)> = self
@@ -2439,9 +2445,10 @@ impl App {
             ui::label(ui, "The amount column must be signed: deposits positive, withdrawals negative. Re-importing the same file is safe.");
             if ui::primary(ui, "Import") {
                 let path = self.m_path.trim().trim_matches('"');
-                let r = std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|text| {
+                let r = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| {
+                    let text = String::from_utf8_lossy(&bytes);
                     let [d, m, a] = self.m_cols.map(|c| c - 1);
-                    self.books.import_csv(&text, self.m_bank, self.m_header, d, m, a)
+                    self.books.import_csv(text.trim_start_matches('\u{feff}'), self.m_bank, self.m_header, d, m, a)
                 });
                 let msg = match &r {
                     Ok((n, s)) => format!("Imported {n} rows, skipped {s} duplicates."),
@@ -2937,7 +2944,7 @@ impl App {
         // Show balances the way the statement does: what's in the bank, or what you owe on the card.
         let sign = if liability { -1 } else { 1 };
         let lines = self.books.recon_lines(self.rc_account, &self.rc_date.to_string()).unwrap_or_default();
-        let cleared = self.books.cleared_balance(self.rc_account).unwrap_or(0) * sign;
+        let cleared = self.books.cleared_balance(self.rc_account, &self.rc_date.to_string()).unwrap_or(0) * sign;
         let last = self.books.last_reconciled(self.rc_account).ok().flatten();
         let ending = parse_cents(&self.rc_ending);
         let mut toggles = vec![];
@@ -3919,7 +3926,7 @@ impl App {
         let users = self.books.users().unwrap_or_default();
         let mut action: Option<Box<dyn FnOnce(&mut App) -> (Result<(), String>, String)>> = None;
         ui::card(ui, "Logins & security", |ui| {
-            ui::label(ui, "These books are encrypted. Each person signs in with their own password. Owners can do everything; bookkeepers can't open this screen; view-only people can look but not change anything.");
+            ui::label(ui, "These books are encrypted. Each person signs in with their own password. Owners can do everything; bookkeepers can't open this screen; view-only people can look but not change anything. Roles prevent mistakes; they can't stop someone determined, because every login unlocks the same file.");
             ui.add_space(6.0);
             egui::Grid::new("users").num_columns(3).spacing([24.0, 6.0]).show(ui, |ui| {
                 ui::th(ui, "USERNAME");

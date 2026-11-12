@@ -665,6 +665,8 @@ pub fn to_csv(table: &Table) -> std::result::Result<String, String> {
     for r in &table.rows {
         // Plain numbers so spreadsheets can add them up.
         let cells = r.cells.iter().map(|c| match c {
+            // A leading ' stops spreadsheets running text from bank descriptions as a formula.
+            Cell::Text(s) if s.trim().starts_with(['=', '+', '-', '@']) => format!("'{}", s.trim()),
             Cell::Text(s) => s.trim().to_string(),
             Cell::Money(m) => format!("{}{}.{:02}", if *m < 0 { "-" } else { "" }, m.abs() / 100, m.abs() % 100),
         });

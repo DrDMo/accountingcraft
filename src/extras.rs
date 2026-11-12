@@ -154,19 +154,27 @@ impl Books {
         Ok(())
     }
 
-    /// Sum of reconciled plus ticked lines (raw debit-positive cents).
-    pub fn cleared_balance(&self, account: i64) -> Result<i64> {
-        self.db.query_row("SELECT COALESCE(SUM(cents), 0) FROM lines WHERE account_id = ?1 AND cleared >= 1", [account], |r| r.get(0))
+    /// Sum of reconciled lines plus lines ticked on or before the statement date (raw debit-positive cents).
+    pub fn cleared_balance(&self, account: i64, through: &str) -> Result<i64> {
+        self.db.query_row(
+            "SELECT COALESCE(SUM(l.cents), 0) FROM lines l JOIN entries e ON e.id = l.entry_id
+             WHERE l.account_id = ?1 AND (l.cleared = 2 OR (l.cleared = 1 AND e.date <= ?2))",
+            params![account, through],
+            |r| r.get(0),
+        )
     }
 
     /// Locks in the ticked lines once they match the statement. `ending` is raw debit-positive cents.
     pub fn finish_reconcile(&self, account: i64, date: &str, ending: i64) -> Result<()> {
-        let cleared = self.cleared_balance(account)?;
+        let cleared = self.cleared_balance(account, date)?;
         if cleared != ending {
             return Err(bad(format!("still off by {}", fmt_cents(ending - cleared))));
         }
         self.atomic(|| {
-            self.db.execute("UPDATE lines SET cleared = 2 WHERE account_id = ?1 AND cleared = 1", [account])?;
+            self.db.execute(
+                "UPDATE lines SET cleared = 2 WHERE account_id = ?1 AND cleared = 1 AND entry_id IN (SELECT id FROM entries WHERE date <= ?2)",
+                params![account, date],
+            )?;
             self.db.execute("INSERT INTO reconciliations(account_id, date, cents) VALUES (?1, ?2, ?3)", params![account, date, ending])?;
             Ok(())
         })
@@ -240,7 +248,7 @@ impl Books {
     /// A starting balance for a bank or card account, against Opening Balance Equity. Card and
     /// loan balances are what you owe, so they're entered as positive numbers.
     pub fn opening_balance(&self, account: i64, date: &str, cents: i64) -> Result<i64> {
-        let equity: i64 = self.db.query_row("SELECT id FROM accounts WHERE name = 'Opening Balance Equity'", [], |r| r.get(0))?;
+        let equity = self.system_account("opening")?;
         let kind: String = self.db.query_row("SELECT kind FROM accounts WHERE id = ?1", [account], |r| r.get(0))?;
         self.post_simple(date, "Opening balance", account, equity, if kind == "liability" { -cents } else { cents })
     }
@@ -701,6 +709,7 @@ mod tests {
         b.tick(lines[0].line_id, true).unwrap();
         assert!(b.finish_reconcile(chk, "2026-01-31", -4_400).is_err(), "one line short");
         b.tick(lines[1].line_id, true).unwrap();
+        assert_eq!(b.cleared_balance(chk, "2026-01-02").unwrap(), -400, "a tick after the statement date doesn't count");
         b.finish_reconcile(chk, "2026-01-31", -4_400).unwrap();
         assert!(b.recon_lines(chk, "2026-01-31").unwrap().is_empty());
         assert_eq!(b.last_reconciled(chk).unwrap(), Some(("2026-01-31".into(), -4_400)));
