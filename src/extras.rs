@@ -228,6 +228,23 @@ impl Books {
     // ---------- receipts ----------
 
     /// Stores (or replaces) the receipt for a transaction. Up to 10 MB of any file type.
+    /// Whether the Home screen's Get started guide was put away.
+    pub fn guide_hidden(&self) -> Result<bool> {
+        self.db.query_row("SELECT guide_hidden FROM settings WHERE id = 1", [], |r| r.get(0))
+    }
+
+    pub fn hide_guide(&self) -> Result<()> {
+        self.db.execute("UPDATE settings SET guide_hidden = 1 WHERE id = 1", []).map(|_| ())
+    }
+
+    /// A starting balance for a bank or card account, against Opening Balance Equity. Card and
+    /// loan balances are what you owe, so they're entered as positive numbers.
+    pub fn opening_balance(&self, account: i64, date: &str, cents: i64) -> Result<i64> {
+        let equity: i64 = self.db.query_row("SELECT id FROM accounts WHERE name = 'Opening Balance Equity'", [], |r| r.get(0))?;
+        let kind: String = self.db.query_row("SELECT kind FROM accounts WHERE id = ?1", [account], |r| r.get(0))?;
+        self.post_simple(date, "Opening balance", account, equity, if kind == "liability" { -cents } else { cents })
+    }
+
     pub fn attach(&self, entry: i64, name: &str, data: &[u8]) -> Result<()> {
         if data.is_empty() || data.len() > 10_000_000 {
             return Err(bad("receipts must be under 10 MB"));

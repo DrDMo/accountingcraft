@@ -67,6 +67,7 @@ pub fn fill(b: &Books, today: NaiveDate) -> Result<()> {
     b.add_time(job, &day(1, 9), 360, 7_500, "Template and cut tops")?;
     b.add_time(job, &day(0, 2), 240, 7_500, "Finish and fit")?;
     b.add_trip(&day(1, 9), "Acme site visit", 184, Some(job))?;
+    b.hide_guide()?; // the sample is already set up
     Ok(())
 }
 
@@ -80,5 +81,6 @@ mod tests {
         assert_eq!(b.customers().unwrap().len(), 3);
         assert_eq!(b.invoices().unwrap().len(), 3);
         assert!(b.entries().unwrap().iter().all(|e| e.date.as_str() <= "2026-03-01"), "nothing dated in the future");
+        assert!(b.guide_hidden().unwrap());
     }
 }

@@ -398,6 +398,7 @@ impl Books {
             ("invoices", "customer_po TEXT NOT NULL DEFAULT ''"),
             ("quotes", "customer_po TEXT NOT NULL DEFAULT ''"),
             ("settings", "templates_seeded INTEGER NOT NULL DEFAULT 0"),
+            ("settings", "guide_hidden INTEGER NOT NULL DEFAULT 0"),
             ("accounts", "intangible INTEGER NOT NULL DEFAULT 0"),
             ("customers", "company TEXT NOT NULL DEFAULT ''"),
             ("customers", "dba TEXT NOT NULL DEFAULT ''"),

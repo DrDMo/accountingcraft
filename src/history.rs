@@ -131,4 +131,15 @@ mod tests {
         assert!(!b.history(10).unwrap()[0].undoable, "can't undo twice");
         assert!(b.undo_change(h.id).is_err());
     }
+
+    #[test]
+    fn opening_balances() {
+        let b = crate::books::Books::open(":memory:").unwrap();
+        let acct = |n: &str| b.accounts().unwrap().into_iter().find(|a| a.name == n).unwrap().id;
+        b.opening_balance(acct("Checking"), "2026-01-01", 250_000).unwrap();
+        b.opening_balance(acct("Credit Card"), "2026-01-01", 40_000).unwrap();
+        let bs = b.balance_sheet("2026-01-31").unwrap();
+        let bal = |n: &str| bs.rows.iter().find(|r| r.1 == n).map_or(0, |r| r.2);
+        assert_eq!((bal("Checking"), bal("Credit Card")), (250_000, 40_000), "money in the bank, and owed on the card");
+    }
 }

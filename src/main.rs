@@ -105,6 +105,11 @@ struct App {
     u_role: lock::Role,
     u_my_pw: String,
     u_recovery: Option<String>,
+    /// Get started guide: the opening balance being typed, and whether the guide was put away.
+    g_account: i64,
+    g_date: Date,
+    g_amount: String,
+    guide_hidden: bool,
     /// Receipts dragged onto the window, waiting to be matched to a transaction: (file name, bytes).
     receipts: Vec<(String, Vec<u8>)>,
     receipt_search: String,
@@ -342,6 +347,10 @@ impl App {
             u_role: lock::Role::Bookkeeper,
             u_my_pw: String::new(),
             u_recovery: None,
+            g_account: 0,
+            g_date: today(),
+            g_amount: String::new(),
+            guide_hidden: false,
             receipts: vec![],
             receipt_search: String::new(),
             undo_next: None,
@@ -494,7 +503,8 @@ impl App {
         app.logged = app.books.db.total_changes();
         app.refresh();
         let first_bank = app.accounts.iter().find(|a| a.kind == "asset").map_or(0, |a| a.id);
-        (app.t_bank, app.i_bank, app.m_bank, app.rc_account) = (first_bank, first_bank, first_bank, first_bank);
+        (app.t_bank, app.i_bank, app.m_bank, app.rc_account, app.g_account) = (first_bank, first_bank, first_bank, first_bank, first_bank);
+        app.guide_hidden = app.books.guide_hidden().unwrap_or(true);
         app.load_prefs();
         app
     }
@@ -1139,6 +1149,89 @@ impl App {
         }
     }
 
+    /// New books: three steps to real numbers. Each ticks itself off; the card goes away when all
+    /// three are done or the person hides it.
+    fn get_started(&mut self, ui: &mut egui::Ui) {
+        let opening = self.accounts.iter().find(|a| a.name == "Opening Balance Equity").map(|a| a.id);
+        let has_opening = self.entries.iter().any(|e| e.lines.iter().any(|l| Some(l.1) == opening));
+        let has_activity = self.entries.iter().any(|e| !e.lines.iter().any(|l| Some(l.1) == opening));
+        let steps = [!self.settings.name.is_empty(), has_opening, has_activity];
+        if steps.iter().all(|d| *d) {
+            return;
+        }
+        let (mut hide, mut save, mut go) = (false, false, None);
+        ui::card(ui, "Get started", |ui| {
+            ui::label(ui, "Three steps and your books show real numbers. Each one ticks itself off.");
+            ui.add_space(6.0);
+            let mark = |ui: &mut egui::Ui, done: bool, n: usize, title: &str| {
+                let (icon, color) = if done { ("✔".to_string(), MONEY_IN) } else { (format!("{n}."), ui::pal(ui).weak) };
+                ui.label(RichText::new(icon).color(color).font(ui::semibold(16.0)));
+                ui.label(RichText::new(title).font(ui::semibold(16.0)));
+            };
+            ui.horizontal(|ui| {
+                mark(ui, steps[0], 1, "Your business");
+                ui::label(ui, "Name, address and logo, for your invoices.");
+                if !steps[0] && self.role == lock::Role::Owner && ui.button("Add them").clicked() {
+                    go = Some(Screen::Business);
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                mark(ui, steps[1], 2, "Starting balances");
+                ui::label(ui, "What's in each bank account (or owed on each card) on the day you start.");
+            });
+            if !steps[1] {
+                ui.horizontal(|ui| {
+                    ui.add_space(28.0);
+                    let banks: Vec<(i64, String)> = self
+                        .accounts
+                        .iter()
+                        .filter(|a| a.active && (a.kind == "asset" || a.kind == "liability") && a.system.is_none())
+                        .map(|a| (a.id, a.name.clone()))
+                        .collect();
+                    let shown = banks.iter().find(|b| b.0 == self.g_account).map_or("Choose…", |b| b.1.as_str()).to_string();
+                    egui::ComboBox::from_id_salt("g_account").selected_text(shown).show_ui(ui, |ui| {
+                        for (id, name) in &banks {
+                            ui.selectable_value(&mut self.g_account, *id, name);
+                        }
+                    });
+                    ui::label(ui, "on");
+                    date_picker(ui, "g_date", &mut self.g_date);
+                    field(ui, &mut self.g_amount, 120.0, "Balance");
+                    save = ui::primary(ui, "Save balance");
+                });
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                mark(ui, steps[2], 3, "Your transactions");
+                ui::label(ui, "Connect your bank, or import a statement file.");
+                if !steps[2] && ui.button("Bring them in").clicked() {
+                    go = Some(Screen::Import);
+                }
+            });
+            ui.add_space(6.0);
+            hide = ui.small_button("Hide this guide").clicked();
+        });
+        if save {
+            let r = match parse_cents(&self.g_amount) {
+                Some(c) => self.books.opening_balance(self.g_account, &self.g_date.to_string(), c).map_err(|e| e.to_string()),
+                None => Err("enter the balance as a number, like 2500.00".into()),
+            };
+            if self.done(r, "Saved the starting balance. Add another account's, or carry on.") {
+                self.g_amount.clear();
+            }
+        }
+        if let Some(s) = go {
+            self.screen = s;
+        }
+        if hide {
+            let r = self.books.hide_guide();
+            if self.done(r, "Guide hidden. Help & Tutorials has the setup tour any time.") {
+                self.guide_hidden = true;
+            }
+        }
+    }
+
     fn history_ui(&mut self, ui: &mut egui::Ui) {
         ui::page(ui, "Change history", "Every change saved in these books, newest first: who made it and when. Deleted transactions can be put back.");
         let rows = self.books.history(500).unwrap_or_default();
@@ -1229,11 +1322,13 @@ impl App {
         let receivable = sum(&|r| r.1 == ar_name);
         let cash = sum(&|r| r.0 == "asset") - receivable;
         let owe = sum(&|r| r.0 == "liability");
+        let title = if self.settings.name.is_empty() { "Welcome" } else { &self.settings.name };
+        ui::page(ui, title, "Here's where your business stands today.");
+        if !self.guide_hidden && self.role != lock::Role::Viewer {
+            self.get_started(ui);
+        }
         let unpaid: Vec<&Invoice> = self.invoices.iter().filter(|i| !i.paid).collect();
         let overdue = unpaid.iter().filter(|i| i.overdue(&now)).count();
-
-        let title = if self.settings.name.is_empty() { "Welcome back" } else { &self.settings.name };
-        ui::page(ui, title, "Here's where your business stands today.");
         let n_unpaid = unpaid.len();
         let note = match overdue {
             0 => format!("{n_unpaid} unpaid invoice{}", if n_unpaid == 1 { "" } else { "s" }),
