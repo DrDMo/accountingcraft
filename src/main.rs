@@ -105,6 +105,11 @@ struct App {
     u_role: lock::Role,
     u_my_pw: String,
     u_recovery: Option<String>,
+    /// Where the last click was, and the note shown there about how the action went: (ok, message, where, when).
+    click_pos: Option<egui::Pos2>,
+    toast: Option<(bool, String, egui::Pos2, std::time::Instant)>,
+    /// A slow action waiting to run: what to say meanwhile, the action, and whether "Working…" has been drawn.
+    work: Option<(String, Box<dyn FnOnce(&mut App)>, bool)>,
     /// Get started guide: the opening balance being typed, and whether the guide was put away.
     g_account: i64,
     g_date: Date,
@@ -347,6 +352,9 @@ impl App {
             u_role: lock::Role::Bookkeeper,
             u_my_pw: String::new(),
             u_recovery: None,
+            click_pos: None,
+            toast: None,
+            work: None,
             g_account: 0,
             g_date: today(),
             g_amount: String::new(),
@@ -558,7 +566,7 @@ impl App {
     fn done<T>(&mut self, r: Result<T, impl std::fmt::Display>, ok: &str) -> bool {
         self.dirty = true;
         let undo = self.undo_next.take();
-        match r {
+        let ok = match r {
             Ok(_) => {
                 self.status = ok.to_string();
                 // Anything that saved a change goes in the change history (best effort).
@@ -574,7 +582,19 @@ impl App {
                 self.status = if e.contains("readonly") { "Error: you have view-only access to these books.".into() } else { format!("Error: {e}") };
                 false
             }
+        };
+        // Say how it went right where the person clicked, as well as in the status bar.
+        if let Some(pos) = self.click_pos {
+            let msg = self.status.trim_start_matches("Error: ").to_string();
+            self.toast = Some((ok, if msg.is_empty() { "Done.".into() } else { msg }, pos, std::time::Instant::now()));
         }
+        ok
+    }
+
+    /// Runs a slow action after a "Working…" box has been drawn, so the person sees something is
+    /// happening while the window waits for it.
+    fn later(&mut self, what: &str, f: impl FnOnce(&mut App) + 'static) {
+        self.work = Some((what.to_string(), Box::new(f), false));
     }
 
     /// Switches to another books file (or a new one), backing it up first.
@@ -682,6 +702,18 @@ fn open_external(target: &str) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut c = std::process::Command::new("xdg-open");
     c.arg(target).spawn().map(|_| ()).map_err(|e| format!("couldn't open it: {e}"))
+}
+
+/// A centered "Working…" box with a spinner, drawn before a slow action runs.
+fn working(ctx: &egui::Context, what: &str) {
+    egui::Area::new(egui::Id::unique("working")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).interactable(false).show(ctx, |ui| {
+        egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(24, 18)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(22.0));
+                ui.label(RichText::new(what).font(ui::semibold(16.0)));
+            });
+        });
+    });
 }
 
 /// Add form plus an editable list. Customers get an address column, vendors a 1099 checkbox.
@@ -847,6 +879,14 @@ fn month_chart(ui: &mut egui::Ui, data: &[(String, i64, i64)]) {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some(p) = ui.input(|i| if i.pointer.any_click() { i.pointer.interact_pos() } else { None }) {
+            self.click_pos = Some(p);
+        }
+        if self.work.as_ref().is_some_and(|w| w.2)
+            && let Some((_, f, _)) = self.work.take()
+        {
+            f(self);
+        }
         if self.dirty {
             self.refresh();
         }
@@ -995,6 +1035,22 @@ impl App {
     /// The help pop-up and the tutorial panel, drawn over whatever screen is showing.
     fn overlays(&mut self, ctx: &egui::Context) {
         self.dropped_receipts(ctx);
+        if let Some((ok, msg, pos, at)) = &self.toast
+            && at.elapsed() < std::time::Duration::from_secs(4)
+        {
+            egui::Area::new(egui::Id::unique("toast")).order(egui::Order::Tooltip).fixed_pos(*pos + egui::vec2(16.0, 16.0)).interactable(false).show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(380.0);
+                    ui.label(RichText::new(format!("{} {msg}", if *ok { "✔" } else { "✖" })).color(if *ok { MONEY_IN } else { MONEY_OUT }));
+                });
+            });
+            ctx.request_repaint_after(std::time::Duration::from_millis(250)); // so it goes away on time
+        }
+        if let Some((what, _, shown)) = &mut self.work {
+            working(ctx, what);
+            *shown = true;
+            ctx.request_repaint();
+        }
         if let Some(key) = self.help_topic {
             let t = help::topic(key);
             let mut open = true;
@@ -1963,12 +2019,15 @@ impl App {
         }
         if make_pkg
             && let Some(parent) = rfd::FileDialog::new().set_title("Where should the package folder go?").pick_folder() {
-                let r = package::write(&self.books, &parent, &self.r_from.to_string(), &self.r_to.to_string());
-                if let Ok(dir) = &r {
-                    let _ = open_external(&dir.display().to_string());
-                }
-                let msg = r.as_ref().map(|d| format!("Package saved to {}", d.display())).unwrap_or_default();
-                self.done(r, &msg);
+                let (from, to) = (self.r_from.to_string(), self.r_to.to_string());
+                self.later("Building the accountant package…", move |a| {
+                    let r = package::write(&a.books, &parent, &from, &to);
+                    if let Ok(dir) = &r {
+                        let _ = open_external(&dir.display().to_string());
+                    }
+                    let msg = r.as_ref().map(|d| format!("Package saved to {}", d.display())).unwrap_or_default();
+                    a.done(r, &msg);
+                });
             }
     }
 
@@ -2449,11 +2508,13 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.f_token).password(true).hint_text("Paste setup token").desired_width(360.0));
                     if ui::primary(ui, "Connect") {
-                        // shortcut: blocks the UI during the HTTPS call; move to a thread if it feels slow.
-                        let r = feed::claim(&self.f_token).and_then(|u| self.books.set_simplefin_url(&u).map_err(|e| e.to_string()));
-                        if self.done(r, "Connected. Click Download to fetch your accounts.") {
-                            self.f_token.clear();
-                        }
+                        // shortcut: the window waits during the HTTPS call (with a Working… box); move to a thread if it feels slow.
+                        self.later("Connecting to your bank…", |a| {
+                            let r = feed::claim(&a.f_token).and_then(|u| a.books.set_simplefin_url(&u).map_err(|e| e.to_string()));
+                            if a.done(r, "Connected. Click Download to fetch your accounts.") {
+                                a.f_token.clear();
+                            }
+                        });
                     }
                 });
                 return;
@@ -2475,12 +2536,15 @@ impl App {
             if ui::primary(ui, "Download last 60 days") {
                 // Re-downloading overlaps safely: each bank transaction id posts once.
                 let start = chrono::Utc::now().timestamp() - 60 * 86_400;
-                let r = feed::fetch(&url, start).and_then(|json| self.books.import_feed(&json));
-                let msg = match &r {
-                    Ok((n, s)) => format!("Downloaded {n} new transactions ({s} already in your books)."),
-                    Err(_) => String::new(),
-                };
-                self.done(r, &msg);
+                let url = url.clone();
+                self.later("Downloading from your bank…", move |a| {
+                    let r = feed::fetch(&url, start).and_then(|json| a.books.import_feed(&json));
+                    let msg = match &r {
+                        Ok((n, s)) => format!("Downloaded {n} new transactions ({s} already in your books)."),
+                        Err(_) => String::new(),
+                    };
+                    a.done(r, &msg);
+                });
             }
         });
         for (fid, sel) in maps {
@@ -3960,8 +4024,10 @@ impl App {
             }
         });
         if let Some(f) = action {
-            let (r, ok) = f(self);
-            self.done(r, &ok);
+            self.later("Working on it…", move |a| {
+                let (r, ok) = f(a);
+                a.done(r, &ok);
+            });
         }
     }
 }
@@ -3990,7 +4056,11 @@ struct Root {
     last_input: std::time::Instant,
     backed_up: Option<String>,
     theme: egui::ThemePreference,
+    /// A slow sign-in step (password hashing takes a moment on purpose), run after "Working…" is drawn.
+    job: Option<GateJob>,
 }
+
+type GateJob = (String, Box<dyn FnOnce(&mut Root)>, bool);
 
 const IDLE_LOCK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
@@ -4012,6 +4082,7 @@ impl Root {
         let p = ui::pal(ui);
         let has_logins = lock::keys_path(&self.path).exists();
         let name = std::path::Path::new(&self.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let mut job: Option<GateJob> = None;
         let mut result: Option<Result<lock::Session, String>> = None;
         let mut try_sample = false;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg)).show(ui, |ui| {
@@ -4083,7 +4154,12 @@ impl Root {
                         });
                         ui.horizontal(|ui| {
                             if ui::primary(ui, "Reset and sign in") {
-                                result = Some(if g.pw != g.pw2 { Err("The passwords don't match.".into()) } else { lock::recover(&self.path, &g.code, &g.user, &g.pw) });
+                                if g.pw != g.pw2 {
+                                    result = Some(Err("The passwords don't match.".into()));
+                                } else {
+                                    let (p, c, u, pw) = (self.path.clone(), g.code.clone(), g.user.clone(), g.pw.clone());
+                                    job = Some(("Checking the recovery key…".into(), Box::new(move |r: &mut Root| r.gate_result(lock::recover(&p, &c, &u, &pw))), false));
+                                }
                             }
                             if ui.button("Back").clicked() {
                                 g.recovering = false;
@@ -4110,7 +4186,8 @@ impl Root {
                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                         ui.horizontal(|ui| {
                             if ui::primary(ui, "Sign in") || (enter && !g.pw.is_empty()) {
-                                result = Some(lock::login(&self.path, &g.user, &g.pw));
+                                let (p, u, pw) = (self.path.clone(), g.user.clone(), g.pw.clone());
+                                job = Some(("Signing in…".into(), Box::new(move |r: &mut Root| r.gate_result(lock::login(&p, &u, &pw))), false));
                             }
                             if ui.link("Forgot your password?").clicked() {
                                 g.recovering = true;
@@ -4137,14 +4214,19 @@ impl Root {
                             if g.pw != g.pw2 {
                                 g.msg = "The passwords don't match.".into();
                             } else {
-                                match lock::setup(&self.path, &g.user, &g.pw) {
-                                    Ok((s, code)) => {
-                                        g.pending = Some(s);
-                                        g.recovery = Some(code);
-                                        g.msg.clear();
-                                    }
-                                    Err(e) => g.msg = e,
-                                }
+                                let (p, u, pw) = (self.path.clone(), g.user.clone(), g.pw.clone());
+                                job = Some((
+                                    "Encrypting your books…".into(),
+                                    Box::new(move |r: &mut Root| match lock::setup(&p, &u, &pw) {
+                                        Ok((s, code)) => {
+                                            r.gate.pending = Some(s);
+                                            r.gate.recovery = Some(code);
+                                            r.gate.msg.clear();
+                                        }
+                                        Err(e) => r.gate.msg = e,
+                                    }),
+                                    false,
+                                ));
                             }
                         }
                     });
@@ -4165,26 +4247,37 @@ impl Root {
             });
         });
         if try_sample {
-            match open_sample() {
-                Ok((path, s)) => {
-                    (self.path, self.remember) = (path, false);
-                    self.start(s);
-                    if let Some(app) = self.app.as_mut() {
-                        app.status = format!("These are sample books. If they lock, sign in as \"{SAMPLE_LOGIN}\" with password \"{SAMPLE_PASSWORD}\".");
+            job = Some((
+                "Making the sample books…".into(),
+                Box::new(|r: &mut Root| match open_sample() {
+                    Ok((path, s)) => {
+                        (r.path, r.remember) = (path, false);
+                        r.start(s);
+                        if let Some(app) = r.app.as_mut() {
+                            app.status = format!("These are sample books. If they lock, sign in as \"{SAMPLE_LOGIN}\" with password \"{SAMPLE_PASSWORD}\".");
+                        }
                     }
-                }
-                Err(e) => self.gate.msg = e,
-            }
-            return;
+                    Err(e) => r.gate.msg = e,
+                }),
+                false,
+            ));
         }
-        match result {
-            Some(Ok(s)) => self.start(s),
-            Some(Err(e)) => {
+        if job.is_some() {
+            self.job = job;
+        }
+        if let Some(r) = result {
+            self.gate_result(r);
+        }
+    }
+
+    fn gate_result(&mut self, r: Result<lock::Session, String>) {
+        match r {
+            Ok(s) => self.start(s),
+            Err(e) => {
                 self.gate.pw.clear();
                 self.gate.pw2.clear();
                 self.gate.msg = e;
             }
-            None => {}
         }
     }
 }
@@ -4211,6 +4304,16 @@ impl eframe::App for Root {
                 let _ = f.parent().map(std::fs::create_dir_all);
                 let _ = std::fs::write(f, format!("{theme:?}"));
             }
+        }
+        if self.job.as_ref().is_some_and(|j| j.2)
+            && let Some((_, f, _)) = self.job.take()
+        {
+            f(self);
+        }
+        if let Some((what, _, shown)) = &mut self.job {
+            working(ui.ctx(), what);
+            *shown = true;
+            ui.ctx().request_repaint();
         }
         let Some(app) = self.app.as_mut() else {
             return self.gate_ui(ui);
@@ -4253,7 +4356,7 @@ fn main() -> eframe::Result {
             }
         });
     // A one-off file given on the command line doesn't change the default.
-    let root = Root { path, remember: arg.is_none(), app: None, gate: Gate::default(), last_input: std::time::Instant::now(), backed_up: None, theme: saved_theme() };
+    let root = Root { path, remember: arg.is_none(), app: None, gate: Gate::default(), last_input: std::time::Instant::now(), backed_up: None, theme: saved_theme(), job: None };
     let icon = egui::IconData { rgba: icon::abacus(256), width: 256, height: 256 };
     eframe::run_native(
         "AccountingCraft",
