@@ -1209,7 +1209,7 @@ impl Books {
             if paid != 0 {
                 tail += &format!("  Paid so far: {}\n  Balance due: {}\n", fmt_cents(paid), fmt_cents(total - paid));
             }
-            tail += &if due.is_empty() { "\nDue on receipt.\n".to_string() } else { format!("\nDue {due}.\n") };
+            tail += &if due.is_empty() { "\nDue on receipt.\n".to_string() } else { format!("\nDue {}.\n", nice_dates(&due)) };
             if !s.pay_link.is_empty() {
                 tail += &format!("Pay online: {}\n", s.pay_link);
             }
@@ -1553,6 +1553,38 @@ pub fn fmt_cents(c: i64) -> String {
     format!("{sign}${grouped}.{r:02}")
 }
 
+/// "2026-11-04" becomes "Nov 4, 2026" wherever an ISO date appears in `s`. For people only:
+/// the database and CSV exports keep ISO dates, which sort and import cleanly.
+// shortcut: US style only, fine while the app is US-focused; use the system locale if it goes international.
+pub fn nice_dates(s: &str) -> String {
+    let b = s.as_bytes();
+    let not_digit = |c: Option<&u8>| c.is_none_or(|c| !c.is_ascii_digit());
+    let iso = |i: usize| -> Option<NaiveDate> {
+        let t = b.get(i..i + 10)?;
+        let shape = t.iter().enumerate().all(|(k, c)| if k == 4 || k == 7 { *c == b'-' } else { c.is_ascii_digit() });
+        let alone = not_digit(i.checked_sub(1).and_then(|j| b.get(j))) && not_digit(b.get(i + 10));
+        if !(shape && alone) {
+            return None;
+        }
+        NaiveDate::parse_from_str(s.get(i..i + 10)?, "%Y-%m-%d").ok()
+    };
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while let Some(c) = s.get(i..).and_then(|r| r.chars().next()) {
+        match iso(i) {
+            Some(d) => {
+                out += &d.format("%b %-d, %Y").to_string();
+                i += 10;
+            }
+            None => {
+                out.push(c);
+                i += c.len_utf8();
+            }
+        }
+    }
+    out
+}
+
 /// Normalizes common bank date formats to ISO "YYYY-MM-DD" (which sorts correctly as text).
 pub fn parse_date(s: &str) -> Option<String> {
     ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d", "%d-%b-%Y", "%b %d, %Y"]
@@ -1564,6 +1596,13 @@ pub fn parse_date(s: &str) -> Option<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn friendly_dates() {
+        assert_eq!(nice_dates("2026-11-04"), "Nov 4, 2026");
+        assert_eq!(nice_dates("Profit & Loss, 2026-01-01 to 2026-12-31"), "Profit & Loss, Jan 1, 2026 to Dec 31, 2026");
+        assert_eq!(nice_dates("PO 12026-11-04 · 2026-13-01 · é 2026-02-03"), "PO 12026-11-04 · 2026-13-01 · é Feb 3, 2026");
+    }
 
     pub(crate) fn doc(customer_id: i64, date: &str, items: &[Item], job: Option<i64>) -> DocInput {
         DocInput { customer_id, date: date.into(), items: items.to_vec(), job, ..Default::default() }

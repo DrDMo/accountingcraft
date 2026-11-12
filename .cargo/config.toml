@@ -1,0 +1,5 @@
+# Local builds pick up a craft-fonts checkout beside this repo when there is one
+# (git clone --depth 1 https://github.com/storytold/craft-fonts ../craft-fonts); without it they
+# fall back to egui's font. See build.rs.
+[env]
+CRAFT_FONTS_DIR = { value = "../craft-fonts", relative = true }

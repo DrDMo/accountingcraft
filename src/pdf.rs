@@ -19,8 +19,16 @@ const H: f32 = 792.0;
 const M: f32 = 54.0; // margin
 const CW: f32 = W - 2.0 * M;
 const PAD: f32 = 5.0; // table cell padding
-// REGULAR and BOLD: Inter from craft-fonts, or egui's font (see build.rs).
+// INTER: Inter Regular and SemiBold from craft-fonts when the build had them (see build.rs).
 include!(concat!(env!("OUT_DIR"), "/pdf_fonts.rs"));
+const REGULAR: &[u8] = match INTER {
+    Some((r, _)) => r,
+    None => epaint_default_fonts::UBUNTU_LIGHT,
+};
+const BOLD: &[u8] = match INTER {
+    Some((_, b)) => b,
+    None => REGULAR,
+};
 
 pub type Rgb = (u8, u8, u8);
 pub const INK: Rgb = (34, 34, 34);
@@ -301,10 +309,24 @@ fn spans(row: &Row) -> bool {
     row.cells.len() > 1 && row.cells.iter().skip(1).all(|c| c.is_empty())
 }
 
+/// The block with its ISO dates written for people ("Nov 4, 2026").
+fn friendly_dates(b: &Block) -> Block {
+    let n = crate::books::nice_dates;
+    match b.clone() {
+        Block::Title(s) => Block::Title(n(&s)),
+        Block::Heading(s) => Block::Heading(n(&s)),
+        Block::Text { text, size, bold, color } => Block::Text { text: n(&text), size, bold, color },
+        Block::Bullet(s) => Block::Bullet(n(&s)),
+        Block::Table { cols, rows } => Block::Table { cols, rows: rows.into_iter().map(|r| Row { cells: r.cells.iter().map(|c| n(c)).collect(), ..r }).collect() },
+        other => other,
+    }
+}
+
 fn layout(blocks: &[Block]) -> Result<Vec<Vec<Op>>, String> {
     let face = |b: &'static [u8]| ttf_parser::Face::parse(b, 0).map_err(|e| format!("bundled font is unreadable: {e}"));
     let mut l = Layout { pages: vec![vec![]], y: M, reg: face(REGULAR)?, bold: face(BOLD)? };
-    for b in blocks {
+    let blocks: Vec<Block> = blocks.iter().map(friendly_dates).collect();
+    for b in &blocks {
         match b {
             Block::Letterhead { logo, name, address } => {
                 let mut h: f32 = 0.0;

@@ -64,19 +64,23 @@ pub fn install(ctx: &egui::Context) {
     }
 }
 
-/// Segoe UI when present (every Windows install); egui's own font otherwise. The "semibold"
-/// family always exists, so code using it never panics on other systems.
+/// Inter (the Craft suite's font) when the build had craft-fonts; else Segoe UI when present
+/// (every Windows install); else egui's own font. The "semibold" family always exists.
 fn fonts(ctx: &egui::Context) {
     let mut defs = egui::FontDefinitions::default();
     let base = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let mut semi = base.clone();
     let dir = std::path::Path::new("C:\\Windows\\Fonts");
-    if let Ok(b) = std::fs::read(dir.join("segoeui.ttf")) {
+    let (regular, semibold) = match crate::pdf::INTER {
+        Some((r, b)) => (Some(r.to_vec()), Some(b.to_vec())),
+        None => (std::fs::read(dir.join("segoeui.ttf")).ok(), std::fs::read(dir.join("seguisb.ttf")).ok()),
+    };
+    if let Some(b) = regular {
         defs.font_data.insert("ui".into(), egui::FontData::from_owned(b).into());
         defs.families.entry(FontFamily::Proportional).or_default().insert(0, "ui".into());
         semi.insert(0, "ui".into());
     }
-    if let Ok(b) = std::fs::read(dir.join("seguisb.ttf")) {
+    if let Some(b) = semibold {
         defs.font_data.insert("ui-semibold".into(), egui::FontData::from_owned(b).into());
         semi.insert(0, "ui-semibold".into());
     }

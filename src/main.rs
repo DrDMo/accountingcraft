@@ -18,7 +18,7 @@ mod reports;
 mod sample;
 mod ui;
 
-use books::{fmt_cents, net_income, parse_cents, parse_rate_bp, Account, Books, DocInput, Entry, Invoice, Item, JobTotals, Party, Quote, Settings, KINDS};
+use books::{fmt_cents, nice_dates, net_income, parse_cents, parse_rate_bp, Account, Books, DocInput, Entry, Invoice, Item, JobTotals, Party, Quote, Settings, KINDS};
 use eframe::egui::{self, RichText};
 use extras::{Asset, Recurring, Rule, TimeEntry, Trip};
 use chrono::{Datelike, NaiveDate as Date};
@@ -276,7 +276,7 @@ fn plain(c: i64) -> String {
 fn date_picker(ui: &mut egui::Ui, salt: &str, d: &mut Date) {
     let (Ok(y), Ok(m), Ok(day)) = (i16::try_from(d.year()), i8::try_from(d.month()), i8::try_from(d.day())) else { return };
     let Ok(mut j) = jiff::civil::Date::new(y, m, day) else { return };
-    ui.add(egui_extras::DatePickerButton::new(&mut j).id_salt(salt).calendar_week(false));
+    ui.add(egui_extras::DatePickerButton::new(&mut j).id_salt(salt).format("%b %-d, %Y").calendar_week(false));
     if let Some(n) = Date::from_ymd_opt(j.year().into(), j.month().unsigned_abs().into(), j.day().unsigned_abs().into()) {
         *d = n;
     }
@@ -1334,7 +1334,7 @@ impl App {
                     }
                     ui.end_row();
                     for r in &self.recurring {
-                        ui.label(&r.next_date);
+                        ui.label(nice_dates(&r.next_date));
                         ui.label(&r.every);
                         ui.label(&r.summary);
                         if ui.small_button("Stop").clicked() {
@@ -1435,7 +1435,7 @@ impl App {
                         }
                         shown += 1;
                         shown_ids.push((e.id, e.vendor));
-                        ui.label(&e.date);
+                        ui.label(nice_dates(&e.date));
                         ui.horizontal(|ui| {
                             ui.label(&e.memo);
                             if e.receipt && ui.small_button("📎").on_hover_text("Open the receipt").clicked() {
@@ -1506,7 +1506,7 @@ impl App {
         }
         self.edit_dialog(ui);
         if let Some(id) = self.confirm_delete {
-            let memo = self.entries.iter().find(|e| e.id == id).map_or(String::new(), |e| format!("{} {}", e.date, e.memo));
+            let memo = self.entries.iter().find(|e| e.id == id).map_or(String::new(), |e| format!("{} {}", nice_dates(&e.date), e.memo));
             let m = egui::Modal::new(egui::Id::unique("confirm_delete")).show(ui.ctx(), |ui| {
                 ui.label(RichText::new("Delete this transaction?").font(ui::semibold(18.0)));
                 ui.label(memo);
@@ -1686,7 +1686,7 @@ impl App {
                 return;
             }
         };
-        ui::card(ui, &table.title, |ui| {
+        ui::card(ui, &nice_dates(&table.title), |ui| {
             if table.rows.len() <= 1 {
                 ui::label(ui, "Nothing in this period yet.");
             }
@@ -1703,8 +1703,8 @@ impl App {
                     for r in &table.rows {
                         for c in &r.cells {
                             match c {
-                                reports::Cell::Text(s) if r.strong => drop(ui.label(RichText::new(s).font(ui::semibold(15.0)))),
-                                reports::Cell::Text(s) => drop(ui.label(s)),
+                                reports::Cell::Text(s) if r.strong => drop(ui.label(RichText::new(nice_dates(s)).font(ui::semibold(15.0)))),
+                                reports::Cell::Text(s) => drop(ui.label(nice_dates(s))),
                                 reports::Cell::Money(m) if r.strong => amount_cell(ui, RichText::new(fmt_cents(*m)).font(ui::semibold(15.0))),
                                 reports::Cell::Money(m) => amount_cell(ui, fmt_cents(*m)),
                             }
@@ -1954,7 +1954,7 @@ impl App {
                     ui.label(format!("Q{}", q.id));
                     ui.label(&q.customer);
                     ui::label(ui, q.job.as_deref().unwrap_or(""));
-                    ui.label(&q.date);
+                    ui.label(nice_dates(&q.date));
                     amount_cell(ui, fmt_cents(q.cents));
                     if ui.button("View / print").clicked() {
                         view = Some((books::Doc::Quote, q.id));
@@ -2013,11 +2013,11 @@ impl App {
                     for i in shown {
                         ui.label(format!("#{}", i.number));
                         ui.label(&i.customer).on_hover_text(&i.description);
-                        ui.label(&i.date);
+                        ui.label(nice_dates(&i.date));
                         if i.overdue(&now) {
-                            ui.label(RichText::new(format!("{} overdue", i.due_date)).color(MONEY_OUT));
+                            ui.label(RichText::new(format!("{} overdue", nice_dates(&i.due_date))).color(MONEY_OUT));
                         } else {
-                            ui::label(ui, if i.due_date.is_empty() { "On receipt" } else { &i.due_date });
+                            ui::label(ui, &if i.due_date.is_empty() { "On receipt".to_string() } else { nice_dates(&i.due_date) });
                         }
                         amount_cell(ui, fmt_cents(i.cents));
                         if i.paid {
@@ -2415,7 +2415,7 @@ impl App {
                 ui.end_row();
                 for q in quotes {
                     ui.label(format!("Quote Q{}", q.id));
-                    ui.label(&q.date);
+                    ui.label(nice_dates(&q.date));
                     ui::label(ui, &q.invoice_id.map_or("Open".to_string(), |i| format!("Invoiced as #{i}")));
                     amount_cell(ui, fmt_cents(q.cents));
                     if ui.small_button("View").clicked() {
@@ -2425,7 +2425,7 @@ impl App {
                 }
                 for i in invoices {
                     ui.label(format!("Invoice #{}", i.number));
-                    ui.label(&i.date);
+                    ui.label(nice_dates(&i.date));
                     if i.paid {
                         ui.label(RichText::new("Paid ✔").color(MONEY_IN));
                     } else if i.overdue(&now) {
@@ -2466,7 +2466,7 @@ impl App {
                 th_num(ui, "UNBILLED");
                 ui.end_row();
                 for t in &unbilled {
-                    ui.label(&t.date);
+                    ui.label(nice_dates(&t.date));
                     ui.label(format!("{:.2}", t.minutes as f64 / 60.0));
                     ui::label(ui, &t.note);
                     amount_cell(ui, fmt_cents(t.cents()));
@@ -2660,7 +2660,7 @@ impl App {
                 ui.end_row();
             });
             if let Some((d, c)) = &last {
-                ui::label(ui, &format!("Last reconciled through {d} at {}.", fmt_cents(c * sign)));
+                ui::label(ui, &format!("Last reconciled through {} at {}.", nice_dates(&d), fmt_cents(c * sign)));
             }
         });
         ui::card(ui, "Transactions to check off", |ui| {
@@ -2673,7 +2673,7 @@ impl App {
                     if ui.checkbox(&mut on, "").changed() {
                         toggles.push((l.line_id, on));
                     }
-                    ui.label(&l.date);
+                    ui.label(nice_dates(&l.date));
                     ui.label(&l.memo);
                     amount_cell(ui, money(l.cents * sign));
                     ui.end_row();
@@ -2764,7 +2764,7 @@ impl App {
                 th_num(ui, "DEDUCTION");
                 ui.end_row();
                 for t in &self.trips {
-                    ui.label(&t.date);
+                    ui.label(nice_dates(&t.date));
                     ui.label(&t.purpose);
                     ui::label(ui, t.job.as_deref().unwrap_or(""));
                     ui.label(format!("{:.1}", t.tenths as f64 / 10.0));
@@ -2817,7 +2817,7 @@ impl App {
                             open = Some(p.clone());
                         }
                         ui.label(&p.customer);
-                        ui.label(&p.date);
+                        ui.label(nice_dates(&p.date));
                         let color = match p.status.as_str() {
                             "accepted" => MONEY_IN,
                             "declined" => MONEY_OUT,
@@ -3134,11 +3134,11 @@ impl App {
                         ui.label(format!("#{}", p.id));
                         ui.label(&p.vendor);
                         ui::label(ui, p.job.as_deref().unwrap_or(""));
-                        ui.label(&p.date);
+                        ui.label(nice_dates(&p.date));
                         amount_cell(ui, fmt_cents(p.total));
                         match (p.status.as_str(), p.owed) {
-                            ("received", true) => ui.label(RichText::new(format!("Received {}, bill to pay", p.received)).color(MONEY_OUT)),
-                            ("received", false) => ui.label(RichText::new(format!("Received {}, paid ✔", p.received)).color(MONEY_IN)),
+                            ("received", true) => ui.label(RichText::new(format!("Received {}, bill to pay", nice_dates(&p.received))).color(MONEY_OUT)),
+                            ("received", false) => ui.label(RichText::new(format!("Received {}, paid ✔", nice_dates(&p.received))).color(MONEY_IN)),
                             ("cancelled", _) => ui.label(RichText::new("Cancelled").color(ui::pal(ui).weak)),
                             _ => ui.label("Open"),
                         };
@@ -3349,7 +3349,7 @@ impl App {
                         }
                         let mut c = field(ui, &mut a.name, 200.0, "").lost_focus();
                         c |= field(ui, &mut a.serial, 130.0, "").lost_focus();
-                        ui.label(&a.purchased);
+                        ui.label(nice_dates(&a.purchased));
                         c |= ui.add(egui::DragValue::new(&mut a.life_years).range(0..=50).suffix(" yr")).changed();
                         let dep = a.depreciation_through(&now);
                         amount_cell(ui, fmt_cents(a.cost));

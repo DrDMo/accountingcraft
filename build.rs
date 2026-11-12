@@ -1,5 +1,5 @@
 // Puts the abacus logo into AccountingCraft.exe so Explorer, the taskbar and shortcuts show it,
-// and picks the PDF fonts: Inter from a craft-fonts checkout (CRAFT_FONTS_DIR), else egui's own font.
+// and finds Inter (the UI and PDF font) in a craft-fonts checkout (CRAFT_FONTS_DIR), if there is one.
 #[path = "src/icon.rs"]
 mod icon;
 
@@ -29,22 +29,22 @@ fn windows_icon(out: &Path) {
     }
 }
 
-/// Writes `pdf_fonts.rs` defining REGULAR and BOLD. Fonts live in storytold/craft-fonts, not in
+/// Writes `pdf_fonts.rs` defining INTER: Some((regular, semibold)) or None. Fonts live in storytold/craft-fonts, not in
 /// this repo (Craft house rule); releases set CRAFT_FONTS_REQUIRED so they can't ship without them.
 fn pdf_fonts(out: &Path) {
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_REQUIRED");
     let required = std::env::var_os("CRAFT_FONTS_REQUIRED").is_some();
     let src = match std::env::var_os("CRAFT_FONTS_DIR").map(PathBuf::from).map(|d| inter(&d)) {
-        Some(Ok((reg, bold))) => format!("const REGULAR: &[u8] = include_bytes!({reg:?});\nconst BOLD: &[u8] = include_bytes!({bold:?});\n"),
+        Some(Ok((reg, bold))) => format!("pub const INTER: Option<(&[u8], &[u8])> = Some((include_bytes!({reg:?}), include_bytes!({bold:?})));\n"),
         found => {
             match found {
                 Some(Err(e)) if required => println!("cargo::error=craft-fonts: {e}"),
-                Some(Err(e)) => println!("cargo::warning=PDFs use egui's font: craft-fonts: {e}"),
+                Some(Err(e)) => println!("cargo::warning=building without Inter: craft-fonts: {e}"),
                 _ if required => println!("cargo::error=CRAFT_FONTS_REQUIRED is set but CRAFT_FONTS_DIR is missing"),
                 _ => {}
             }
-            "const REGULAR: &[u8] = epaint_default_fonts::UBUNTU_LIGHT;\nconst BOLD: &[u8] = REGULAR;\n".into()
+            "pub const INTER: Option<(&[u8], &[u8])> = None;\n".into()
         }
     };
     let path = out.join("pdf_fonts.rs");
