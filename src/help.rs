@@ -214,6 +214,18 @@ pub fn topic(screen: &str) -> Topic {
                 ]),
             ],
         },
+        "history" => Topic {
+            title: "Change history",
+            intro: "A record of every change saved in these books: when, who, and what.",
+            sections: &[(
+                "Using it",
+                &[
+                    "Each saved change adds a line, newest at the top. With several logins, it shows who did what.",
+                    "Deleted a transaction by mistake? Click Undo beside it to put it back, receipt and all.",
+                    "Undo isn't available once the date is inside a locked period (Business & Settings).",
+                ],
+            )],
+        },
         "business" => Topic {
             title: "Business & Settings",
             intro: "Your details for invoices, rates, the books lock, backups, and who can sign in.",

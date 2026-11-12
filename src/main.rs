@@ -7,6 +7,7 @@ mod books;
 mod extras;
 mod feed;
 mod help;
+mod history;
 mod icon;
 mod lock;
 mod mail;
@@ -40,11 +41,12 @@ enum Screen {
     Proposals,
     Accounts,
     Business,
+    History,
     Help,
 }
 
 /// Screen names used by the help topics and tutorials.
-const SCREENS: [(Screen, &str); 15] = [
+const SCREENS: [(Screen, &str); 16] = [
     (Screen::Home, "home"),
     (Screen::Transactions, "transactions"),
     (Screen::Invoices, "invoices"),
@@ -59,6 +61,7 @@ const SCREENS: [(Screen, &str); 15] = [
     (Screen::Import, "import"),
     (Screen::Accounts, "accounts"),
     (Screen::Business, "business"),
+    (Screen::History, "history"),
     (Screen::Help, "help"),
 ];
 
@@ -102,6 +105,10 @@ struct App {
     u_role: lock::Role,
     u_my_pw: String,
     u_recovery: Option<String>,
+    /// A transaction about to be deleted: its description and a copy, so the history can undo it.
+    undo_next: Option<(String, String)>,
+    /// The database's change counter when the history was last written; more means something was saved.
+    logged: u64,
     /// Changing the encryption key: the owner's password, then the temporary passwords to hand out.
     u_rot_pw: String,
     u_temps: Vec<(String, String)>,
@@ -332,6 +339,8 @@ impl App {
             u_role: lock::Role::Bookkeeper,
             u_my_pw: String::new(),
             u_recovery: None,
+            undo_next: None,
+            logged: 0,
             u_rot_pw: String::new(),
             u_temps: vec![],
             help_topic: None,
@@ -471,9 +480,13 @@ impl App {
         // Post anything recurring that came due while the app was closed.
         match if app.role == lock::Role::Viewer { Ok(0) } else { app.books.run_recurring(&t.to_string()) } {
             Ok(0) => {}
-            Ok(n) => app.status = format!("Posted {n} recurring item(s) that came due."),
+            Ok(n) => {
+                app.status = format!("Posted {n} recurring item(s) that came due.");
+                let _ = app.books.log_change("AccountingCraft", &format!("Posted {n} recurring item(s) that came due"), None);
+            }
             Err(e) => app.status = format!("Error: {e}"),
         }
+        app.logged = app.books.db.total_changes();
         app.refresh();
         let first_bank = app.accounts.iter().find(|a| a.kind == "asset").map_or(0, |a| a.id);
         (app.t_bank, app.i_bank, app.m_bank, app.rc_account) = (first_bank, first_bank, first_bank, first_bank);
@@ -529,9 +542,16 @@ impl App {
     /// Shows a message for a write and reloads cached data.
     fn done<T>(&mut self, r: Result<T, impl std::fmt::Display>, ok: &str) -> bool {
         self.dirty = true;
+        let undo = self.undo_next.take();
         match r {
             Ok(_) => {
                 self.status = ok.to_string();
+                // Anything that saved a change goes in the change history (best effort).
+                if self.books.db.total_changes() != self.logged {
+                    let what = undo.as_ref().map_or(ok, |u| u.0.as_str());
+                    let _ = self.books.log_change(&self.user, what.trim_end_matches('.'), undo.as_ref().map(|u| u.1.as_str()));
+                }
+                self.logged = self.books.db.total_changes();
                 true
             }
             Err(e) => {
@@ -887,7 +907,7 @@ impl eframe::App for App {
                         ("Spending", &[(Screen::Purchases, "Purchase Orders"), (Screen::Mileage, "Mileage"), (Screen::Assets, "Assets")]),
                         ("Banking", &[(Screen::Transactions, "Transactions"), (Screen::Import, "Import & Rules"), (Screen::Reconcile, "Reconcile")]),
                         ("", &[(Screen::Reports, "Reports")]),
-                        ("Setup", &[(Screen::People, "Customers & Vendors"), (Screen::Accounts, "Chart of Accounts"), (Screen::Business, "Business & Settings")]),
+                        ("Setup", &[(Screen::People, "Customers & Vendors"), (Screen::Accounts, "Chart of Accounts"), (Screen::Business, "Business & Settings"), (Screen::History, "Change history")]),
                         ("", &[(Screen::Help, "Help & Tutorials")]),
                     ];
                     for (group, items) in NAV {
@@ -945,6 +965,7 @@ impl eframe::App for App {
                     Screen::Assets => self.assets_ui(ui),
                     Screen::Purchases => self.purchases(ui),
                     Screen::Proposals => self.proposals_ui(ui),
+                    Screen::History => self.history_ui(ui),
                     Screen::Help => self.help_ui(ui),
                     Screen::Import => self.import(ui),
                     Screen::Accounts => self.accounts_ui(ui),
@@ -1042,6 +1063,39 @@ impl App {
         self.tour = Some((i, 0));
         self.help_topic = None;
         self.screen = screen_of(help::TUTORIALS[i].steps[0].screen);
+    }
+
+    fn history_ui(&mut self, ui: &mut egui::Ui) {
+        ui::page(ui, "Change history", "Every change saved in these books, newest first: who made it and when. Deleted transactions can be put back.");
+        let rows = self.books.history(500).unwrap_or_default();
+        let mut undo = None;
+        ui::card(ui, "Changes", |ui| {
+            if rows.is_empty() {
+                ui::label(ui, "Nothing yet. Changes appear here as people make them.");
+                return;
+            }
+            egui::Grid::new("history").striped(true).num_columns(4).spacing([24.0, 6.0]).show(ui, |ui| {
+                for h in ["WHEN", "WHO", "WHAT", ""] {
+                    ui::th(ui, h);
+                }
+                ui.end_row();
+                for h in &rows {
+                    ui.label(nice_dates(&h.at));
+                    ui.label(&h.user);
+                    ui.label(&h.what);
+                    if h.undoable && self.role != lock::Role::Viewer && ui.small_button("Undo").on_hover_text("Put this transaction back").clicked() {
+                        undo = Some(h.id);
+                    } else {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+        if let Some(id) = undo {
+            let r = self.books.undo_change(id);
+            self.done(r, "Put the deleted transaction back.");
+        }
     }
 
     fn help_ui(&mut self, ui: &mut egui::Ui) {
@@ -1524,8 +1578,9 @@ impl App {
             });
             let (yes, no) = m.inner;
             if yes {
+                self.undo_next = self.books.entry_snapshot(id).ok();
                 let r = self.books.delete_entry(id);
-                self.done(r, "Deleted.");
+                self.done(r, "Deleted. Change history can put it back.");
             }
             if yes || no || m.should_close() {
                 self.confirm_delete = None;
@@ -2665,7 +2720,7 @@ impl App {
                 ui.end_row();
             });
             if let Some((d, c)) = &last {
-                ui::label(ui, &format!("Last reconciled through {} at {}.", nice_dates(&d), fmt_cents(c * sign)));
+                ui::label(ui, &format!("Last reconciled through {} at {}.", nice_dates(d), fmt_cents(c * sign)));
             }
         });
         ui::card(ui, "Transactions to check off", |ui| {

@@ -334,6 +334,8 @@ impl Books {
              CREATE TABLE IF NOT EXISTS reconciliations(
                id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id),
                date TEXT NOT NULL, cents INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS history(
+               id INTEGER PRIMARY KEY, at TEXT NOT NULL, user TEXT NOT NULL, what TEXT NOT NULL, undo TEXT);
              CREATE TABLE IF NOT EXISTS attachments(
                entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE, name TEXT NOT NULL, data BLOB NOT NULL);
              CREATE TABLE IF NOT EXISTS trips(
