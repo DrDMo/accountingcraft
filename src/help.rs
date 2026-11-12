@@ -230,6 +230,7 @@ pub fn topic(screen: &str) -> Topic {
                     "To add someone, type their username and a password, choose their role, and Save login. Give them the password in person. Saving again for the same username resets their password.",
                     "The books lock themselves after 15 minutes without use. Click Lock in the sidebar to lock them sooner.",
                     "Forgot your password? On the sign-in screen, click \"Forgot your password?\" and enter your recovery key. Lost both? There is no back door, so keep the recovery key somewhere safe.",
+                    "Removed someone who might have kept a copy of your books and the .keys file? Use Change the encryption key. You keep your password, everyone else gets a temporary one to hand out, and you get a new recovery key. Backups made before then still open with the old key.",
                     "Open the books with the .db file and the .db.keys file side by side. Moving or copying the books? Move both.",
                 ]),
             ],

@@ -38,8 +38,9 @@ made-up business with a year of activity, and your own books aren't touched.
   15 minutes without use.
 - **Recovery key:** shown once when you protect your books. If every owner forgets their password, it
   is the only way back in. Nobody, including the authors, can recover your books without it.
-- **Known limit:** removing a login stops that person from signing in, but it doesn't re-encrypt the
-  books. Someone who kept a copy of the books and the old key file could still open that copy.
+- **Removing someone:** their login stops working at once. If they might have kept a copy of the
+  key file, **Change the encryption key** re-encrypts the books so that copy no longer opens them
+  (backups made before then keep the old key).
 - The app only goes online when you ask it to: bank feeds through SimpleFIN, and links you click.
 
 ## Download

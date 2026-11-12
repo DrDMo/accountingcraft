@@ -291,6 +291,58 @@ pub fn new_recovery_key(key: &Key, db: &str) -> Result<String, String> {
     Ok(code)
 }
 
+/// Re-encrypts the books with a brand-new key, for after someone loses access: a copy of the books
+/// and key file they kept stops matching. The owner keeps their password; everyone else gets a new
+/// temporary password (returned for the owner to hand out), and there's a new recovery key. A backup
+/// with the old key is made first. Returns (new key, [(username, temporary password)], recovery key).
+pub fn rotate_key(books: &Books, key: &Key, db: &str, me: &str, my_pw: &str) -> Result<(Key, Vec<(String, String)>, String), String> {
+    let mut keys = read_keys(db)?;
+    if keys["users"].get(norm(me)).and_then(|e| unwrap_entry(e, my_pw)) != Some(*key) {
+        return Err("That isn't your password.".into());
+    }
+    crate::extras::auto_backup(books, db).map_err(|e| format!("couldn't make a backup first, so nothing changed: {e}"))?;
+    let new = random::<32>()?;
+    let (mut users, mut temps) = (serde_json::Map::new(), vec![]);
+    for (name, _) in books.users().map_err(|e| e.to_string())? {
+        let pw = if norm(&name) == norm(me) { my_pw.to_string() } else { temp_password()? };
+        users.insert(norm(&name), wrap(&new, &pw)?);
+        if norm(&name) != norm(me) {
+            temps.push((name, pw));
+        }
+    }
+    let recovery = new_recovery()?;
+    keys["users"] = Value::Object(users);
+    keys["recovery"] = wrap(&new, &norm_recovery(&recovery))?;
+    let rekey = |k: &Key| books.db.execute_batch(&format!("PRAGMA rekey = \"x'{}'\";", hex(k)));
+    rekey(&new).map_err(|e| format!("couldn't re-encrypt: {e}"))?;
+    if let Err(e) = write_keys(db, &keys) {
+        // The old key file is untouched (written atomically), so go back to the old key.
+        return Err(match rekey(key) {
+            Ok(()) => format!("couldn't save the new keys, so nothing changed: {e}"),
+            Err(e2) => format!("couldn't save the new keys ({e}) or undo ({e2}). Restore the backup made just now."),
+        });
+    }
+    Ok((new, temps, recovery))
+}
+
+/// A readable one-time password like "k7pm-x3ac-9rtw" (no 0/o, 1/l/i).
+fn temp_password() -> Result<String, String> {
+    const ABC: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789"; // 31 symbols
+    let mut out = String::new();
+    while out.len() < 14 {
+        for b in random::<32>()? {
+            if b < 248 && out.len() < 14 {
+                // 248 = 31 * 8, so every symbol is equally likely.
+                if out.len() == 4 || out.len() == 9 {
+                    out.push('-');
+                }
+                out.push(char::from(ABC[usize::from(b) % ABC.len()]));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Plain (unencrypted) backups left over from before logins were turned on.
 pub fn plain_backups(db: &str) -> Vec<PathBuf> {
     let dir = Path::new(db).parent().unwrap_or(Path::new(".")).join("backups");
@@ -341,7 +393,26 @@ mod tests {
         remove_login(&s.books, &db, "alex", "Pat").unwrap();
         assert!(login(&db, "pat", "pat password").is_err());
         assert!(remove_login(&s.books, &db, "alex", "alex").is_err());
+
+        // Changing the key: old key and old key file stop working, the owner keeps their password,
+        // others get temporary passwords, and the data is intact.
+        set_login(&s.books, &s.key, &db, "Sam", "sam password", Role::Bookkeeper).unwrap();
+        let old_keys = std::fs::read_to_string(keys_path(&db)).unwrap();
+        assert!(rotate_key(&s.books, &s.key, &db, "alex", "wrong password").is_err());
+        let (new, temps, new_code) = rotate_key(&s.books, &s.key, &db, "alex", "correct horse").unwrap();
+        assert_ne!(new, s.key);
         drop(s);
+        assert!(Books::open_key(&db, Some(&new)).unwrap().accounts().unwrap().iter().any(|a| a.name == "Rainy Day Fund"));
+        let old_key = unwrap_entry(&serde_json::from_str::<Value>(&old_keys).unwrap()["users"]["alex"], "correct horse").unwrap();
+        assert!(Books::open_key(&db, Some(&old_key)).and_then(|b| b.accounts()).is_err(), "old key no longer opens the books");
+        assert!(login(&db, "sam", "sam password").is_err());
+        let (who, pw) = &temps[0];
+        assert_eq!((who.as_str(), pw.len()), ("Sam", 14));
+        assert!(login(&db, "sam", pw).is_ok());
+        assert!(recover(&db, &code, "alex", "another password").is_err(), "old recovery key retired");
+        let s = login(&db, "alex", "correct horse").unwrap();
+        drop(s);
+        let code = new_code;
 
         // Recovery key resets the owner's password.
         assert!(recover(&db, "0000-0000", "alex", "new password").is_err());

@@ -102,6 +102,9 @@ struct App {
     u_role: lock::Role,
     u_my_pw: String,
     u_recovery: Option<String>,
+    /// Changing the encryption key: the owner's password, then the temporary passwords to hand out.
+    u_rot_pw: String,
+    u_temps: Vec<(String, String)>,
     /// Help pop-up showing this screen's topic.
     help_topic: Option<&'static str>,
     /// Running tutorial: (which, step).
@@ -329,6 +332,8 @@ impl App {
             u_role: lock::Role::Bookkeeper,
             u_my_pw: String::new(),
             u_recovery: None,
+            u_rot_pw: String::new(),
+            u_temps: vec![],
             help_topic: None,
             tour: None,
             books,
@@ -3638,7 +3643,9 @@ impl App {
                     ui.label(role.label());
                     if !name.eq_ignore_ascii_case(self.user.trim()) && ui.small_button("Remove").clicked() {
                         let n = name.clone();
-                        action = Some(Box::new(move |a: &mut App| (lock::remove_login(&a.books, &a.path, &a.user, &n), format!("Removed {n}. They can no longer sign in."))));
+                        action = Some(Box::new(move |a: &mut App| {
+                            (lock::remove_login(&a.books, &a.path, &a.user, &n), format!("Removed {n}. They can no longer sign in. If they might have a copy of your books, change the encryption key below."))
+                        }));
                     }
                     ui.end_row();
                 }
@@ -3683,6 +3690,7 @@ impl App {
                     ui.label(RichText::new(code).monospace().size(18.0));
                     ui::label(ui, "Your old recovery key no longer works. Print or save this one and keep it somewhere safe.");
                 }
+                None if !self.u_temps.is_empty() => {}
                 None => {
                     if ui.button("Make a new recovery key").clicked() {
                         action = Some(Box::new(|a: &mut App| match lock::new_recovery_key(&a.key, &a.path) {
@@ -3694,6 +3702,37 @@ impl App {
                         }));
                     }
                 }
+            }
+            ui.add_space(8.0);
+            ui.label(RichText::new("Change the encryption key").strong());
+            ui::label(ui, "Do this after removing someone who might have kept a copy of your books and key file: their copy won't open these books any more. You keep your password. Everyone else gets a new temporary password, and you get a new recovery key. Backups made before today keep the old key.");
+            if self.u_temps.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_sized([180.0, 32.0], egui::TextEdit::singleline(&mut self.u_rot_pw).password(true).hint_text("Your password"));
+                    if ui.button("Change the key").clicked() {
+                        action = Some(Box::new(|a: &mut App| {
+                            let pw = std::mem::take(&mut a.u_rot_pw);
+                            match lock::rotate_key(&a.books, &a.key, &a.path, &a.user, &pw) {
+                                Ok((key, temps, code)) => {
+                                    a.key = key;
+                                    a.u_recovery = Some(code);
+                                    a.u_temps = temps;
+                                    (Ok(()), "The books now use a new encryption key.".into())
+                                }
+                                Err(e) => (Err(e), String::new()),
+                            }
+                        }));
+                    }
+                });
+            } else {
+                ui::label(ui, "Done. Give each person their new password in person. An owner can set a different one for them any time above.");
+                egui::Grid::new("temps").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
+                    for (name, pw) in &self.u_temps {
+                        ui.label(name);
+                        ui.label(RichText::new(pw).monospace().size(16.0));
+                        ui.end_row();
+                    }
+                });
             }
         });
         if let Some(f) = action {
