@@ -484,6 +484,8 @@ impl Books {
             "UPDATE accounts SET system = 'opening' WHERE name = 'Opening Balance Equity' AND system IS NULL AND NOT EXISTS (SELECT 1 FROM accounts WHERE system = 'opening')",
             [],
         )?;
+        // Deleted transactions can be put back for 90 days; after that the saved copy (and its receipt) goes.
+        books.db.execute("UPDATE history SET undo = NULL WHERE undo IS NOT NULL AND at < date('now', '-90 days')", [])?;
         books.seed_templates()?;
         Ok(books)
     }
@@ -1351,6 +1353,44 @@ impl Books {
         })
     }
 
+    /// Deletes an invoice that has no payments (a typo, or one that shouldn't have been sent).
+    /// Its quote and billed time become open again so it can be redone.
+    pub fn delete_invoice(&self, id: i64) -> Result<()> {
+        let (entry, paid): (i64, bool) =
+            self.db.query_row("SELECT entry_id, EXISTS (SELECT 1 FROM payments WHERE invoice_id = ?1) FROM invoices WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        if paid {
+            return Err(rusqlite::Error::InvalidParameterName("this invoice has payments; remove them first".into()));
+        }
+        if self.reconciled(entry)? {
+            return Err(rusqlite::Error::InvalidParameterName("this invoice is reconciled against a statement".into()));
+        }
+        self.check_open(&self.entry_date(entry)?)?;
+        self.atomic(|| {
+            self.db.execute("UPDATE quotes SET invoice_id = NULL WHERE invoice_id = ?1", [id])?;
+            self.db.execute("UPDATE time_entries SET invoice_id = NULL WHERE invoice_id = ?1", [id])?;
+            self.db.execute("DELETE FROM invoice_items WHERE invoice_id = ?1", [id])?;
+            self.db.execute("DELETE FROM invoices WHERE id = ?1", [id])?;
+            self.db.execute("DELETE FROM entries WHERE id = ?1", [entry])?;
+            Ok(())
+        })
+    }
+
+    /// Takes back an invoice's most recent payment (entered by mistake, or a bounced check).
+    pub fn delete_last_payment(&self, invoice_id: i64) -> Result<()> {
+        let (pid, entry): (i64, i64) =
+            self.db.query_row("SELECT id, entry_id FROM payments WHERE invoice_id = ?1 ORDER BY id DESC LIMIT 1", [invoice_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        if self.reconciled(entry)? {
+            return Err(rusqlite::Error::InvalidParameterName("that payment is reconciled against a statement".into()));
+        }
+        self.check_open(&self.entry_date(entry)?)?;
+        self.atomic(|| {
+            self.db.execute("DELETE FROM payments WHERE id = ?1", [pid])?;
+            self.db.execute("UPDATE invoices SET paid_entry_id = NULL WHERE paid_entry_id = ?1", [entry])?;
+            self.db.execute("DELETE FROM entries WHERE id = ?1", [entry])?;
+            Ok(())
+        })
+    }
+
     /// Money a customer pays before there's an invoice. It isn't earned yet, so it's held in
     /// Customer Deposits (a liability) until applied to an invoice.
     pub fn record_deposit(&self, customer: i64, date: &str, bank: i64, cents: i64) -> Result<()> {
@@ -1432,6 +1472,7 @@ impl Books {
     /// Imports a bank CSV (columns are 0-based) into Uncategorized Income/Expense.
     /// Rows already present (same bank, date, memo and amount) are skipped so re-importing is safe.
     /// Returns (imported, skipped).
+    #[allow(clippy::too_many_arguments)] // column picks from one form
     pub fn import_csv(
         &self,
         csv_text: &str,
@@ -1440,6 +1481,7 @@ impl Books {
         date_col: usize,
         memo_col: usize,
         amount_col: usize,
+        flip: bool,
     ) -> std::result::Result<(usize, usize), String> {
         let mut rdr = csv::ReaderBuilder::new().has_headers(has_header).flexible(true).from_reader(csv_text.as_bytes());
         let mut parsed = vec![];
@@ -1449,6 +1491,7 @@ impl Books {
             let get = |c: usize| rec.get(c).map(str::trim).ok_or(format!("row {row}: missing column {}", c + 1));
             let date = parse_date(get(date_col)?).ok_or(format!("row {row}: bad date {:?}", get(date_col)?))?;
             let cents = parse_cents(get(amount_col)?).ok_or(format!("row {row}: bad amount {:?}", get(amount_col)?))?;
+            let cents = if flip { -cents } else { cents }; // card exports often show charges as positive
             if cents != 0 {
                 parsed.push((date, get(memo_col)?.to_string(), cents));
             }
@@ -1618,6 +1661,15 @@ pub(crate) mod tests {
         assert_eq!(nice_dates("PO 12026-11-04 · 2026-13-01 · é 2026-02-03"), "PO 12026-11-04 · 2026-13-01 · é Feb 3, 2026");
     }
 
+    #[test]
+    fn csv_flip_signs() {
+        let b = Books::open(":memory:").unwrap();
+        let card = id(&b, "Credit Card");
+        assert_eq!(b.import_csv("01/05/2026,HARDWARE,12.00\n", card, false, 0, 1, 2, true), Ok((1, 0)));
+        let line = b.db.query_row("SELECT cents FROM lines WHERE account_id = ?1", [card], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(line, -1_200, "a positive charge on the export is money owed on the card");
+    }
+
     pub(crate) fn doc(customer_id: i64, date: &str, items: &[Item], job: Option<i64>) -> DocInput {
         DocInput { customer_id, date: date.into(), items: items.to_vec(), job, ..Default::default() }
     }
@@ -1660,9 +1712,9 @@ pub(crate) mod tests {
         b.mark_paid(inv, "2026-01-21", chk).unwrap(); // paying twice is a no-op
 
         let csv = "Date,Description,Amount\n01/25/2026,COFFEE SHOP,-4.50\n01/26/2026,\"Client, Inc\",\"1,000.00\"\n";
-        assert_eq!(b.import_csv(csv, chk, true, 0, 1, 2), Ok((2, 0)));
-        assert_eq!(b.import_csv(csv, chk, true, 0, 1, 2), Ok((0, 2)));
-        assert!(b.import_csv("x,y,zz\n", chk, false, 0, 1, 2).is_err());
+        assert_eq!(b.import_csv(csv, chk, true, 0, 1, 2, false), Ok((2, 0)));
+        assert_eq!(b.import_csv(csv, chk, true, 0, 1, 2, false), Ok((0, 2)));
+        assert!(b.import_csv("x,y,zz\n", chk, false, 0, 1, 2, false).is_err());
 
         let pl = b.profit_and_loss("2026-01-01", "2026-01-31").unwrap();
         assert_eq!(net_income(&pl), 80_000 + 100_000 - 5_000 - 450);
@@ -1788,7 +1840,7 @@ pub(crate) mod tests {
         let inv = b.create_invoice(&d).unwrap();
         let i = &b.invoices().unwrap()[0];
         assert_eq!((i.cents, i.balance(), i.overdue("2026-06-01"), i.overdue("2026-05-31")), (10_825, 10_825, true, false));
-        let bal = |a: i64| b.db.query_row("SELECT SUM(cents) FROM lines WHERE account_id = ?1", [a], |r| r.get::<_, i64>(0)).unwrap();
+        let bal = |a: i64| b.db.query_row("SELECT COALESCE(SUM(cents), 0) FROM lines WHERE account_id = ?1", [a], |r| r.get::<_, i64>(0)).unwrap();
         assert_eq!(bal(tax_acct), -825, "tax is owed to the state, not income");
 
         assert!(b.record_payment(inv, "2026-05-10", chk, 20_000).is_err(), "can't overpay");
@@ -1803,6 +1855,15 @@ pub(crate) mod tests {
         assert_eq!(bal(chk), 10_825);
         let pay = b.db.query_row("SELECT entry_id FROM payments LIMIT 1", [], |r| r.get::<_, i64>(0)).unwrap();
         assert!(b.delete_entry(pay).is_err() && b.update_simple(pay, "2026-05-10", "x", chk, 1).is_err(), "payments belong to the invoice");
+
+        // Taking back payments, then deleting the invoice, leaves the books as before it.
+        assert!(b.delete_invoice(inv).is_err(), "paid invoices can't be deleted");
+        b.delete_last_payment(inv).unwrap();
+        assert_eq!((b.invoices().unwrap()[0].balance(), bal(chk)), (5_825, 5_000));
+        b.delete_last_payment(inv).unwrap();
+        b.delete_invoice(inv).unwrap();
+        assert!(b.invoices().unwrap().is_empty());
+        assert_eq!((bal(chk), bal(tax_acct)), (0, 0));
 
         // Editing a simple transaction keeps it balanced.
         let e = b.post_simple("2026-05-02", "Glue", chk, id(&b, "Job Materials"), -1_000).unwrap();
@@ -1844,14 +1905,14 @@ pub(crate) mod tests {
 01/05/2026,STARBUCKS,-4.50
 01/05/2026,STARBUCKS,-4.50
 ";
-        assert_eq!(b.import_csv(csv, chk, true, 0, 1, 2), Ok((2, 0)));
-        assert_eq!(b.import_csv(csv, chk, true, 0, 1, 2), Ok((0, 2)));
+        assert_eq!(b.import_csv(csv, chk, true, 0, 1, 2, false), Ok((2, 0)));
+        assert_eq!(b.import_csv(csv, chk, true, 0, 1, 2, false), Ok((0, 2)));
         let three = "D,M,A
 01/05/2026,STARBUCKS,-4.50
 01/05/2026,STARBUCKS,-4.50
 01/05/2026,STARBUCKS,-4.50
 ";
-        assert_eq!(b.import_csv(three, chk, true, 0, 1, 2), Ok((1, 2)), "only the extra one is new");
+        assert_eq!(b.import_csv(three, chk, true, 0, 1, 2, false), Ok((1, 2)), "only the extra one is new");
 
         // Reconciled transactions can't be deleted, edited, or have their bank line moved.
         let lines = b.recon_lines(chk, "2026-01-31").unwrap();
@@ -1884,7 +1945,7 @@ pub(crate) mod tests {
         assert_eq!(b.import_csv("D,M,A
 02/10/2026,OLD,-1.00
 03/10/2026,NEW,-2.00
-", chk, true, 0, 1, 2), Ok((1, 1)));
+", chk, true, 0, 1, 2, false), Ok((1, 1)));
         b.add_recurring_txn("month", "2026-01-15", "Rent", chk, id(&b, "Rent or Lease"), -10_000, None, None).unwrap();
         b.add_recurring_txn("month", "2026-02-20", "Bad", chk, 999_999, -1, None, None).unwrap();
         b.add_recurring_txn("month", "2026-02-20", "Phone", chk, id(&b, "Phone & Internet"), -5_000, None, None).unwrap();

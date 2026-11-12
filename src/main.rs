@@ -202,6 +202,7 @@ struct App {
     m_path: String,
     m_bank: i64,
     m_header: bool,
+    m_flip: bool,
     m_cols: [usize; 3], // 1-based date, description, amount
     f_token: String,
     rl_pattern: String,
@@ -216,6 +217,8 @@ struct App {
     inv_q: String,
     /// Invoice filter: 0 all, 1 unpaid, 2 overdue, 3 paid.
     inv_filter: u8,
+    /// Invoice waiting for "are you sure": (id, number, true = take back its last payment).
+    inv_confirm: Option<(i64, i64, bool)>,
     reg_bulk_job: Option<i64>,
     job_open: Option<i64>,
     // Proposals
@@ -433,6 +436,7 @@ impl App {
             m_path: String::new(),
             m_bank: 0,
             m_header: true,
+            m_flip: false,
             m_cols: [1, 2, 3],
             f_token: String::new(),
             rl_pattern: String::new(),
@@ -444,6 +448,7 @@ impl App {
             inv_tab: 1,
             inv_q: String::new(),
             inv_filter: 0,
+            inv_confirm: None,
             reg_bulk_job: None,
             job_open: None,
             proposals: vec![],
@@ -883,6 +888,8 @@ fn month_chart(ui: &mut egui::Ui, data: &[(String, i64, i64)]) {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Small writes that don't report (reconcile ticks) aren't history; don't credit them to the next action.
+        self.logged = self.books.db.total_changes();
         if let Some(p) = ui.input(|i| if i.pointer.any_click() { i.pointer.interact_pos() } else { None }) {
             self.click_pos = Some(p);
         }
@@ -2336,6 +2343,15 @@ impl App {
                         if held > 0 && ui.button(format!("Apply {} deposit", fmt_cents(held.min(i.balance())))).clicked() {
                             apply = Some(i.id);
                         }
+                        if self.role != lock::Role::Viewer {
+                            if i.paid_cents > 0 {
+                                if ui.small_button("Remove last payment").clicked() {
+                                    self.inv_confirm = Some((i.id, i.number, true));
+                                }
+                            } else if ui.small_button("Delete").clicked() {
+                                self.inv_confirm = Some((i.id, i.number, false));
+                            }
+                        }
                         ui.end_row();
                     }
                 });
@@ -2347,6 +2363,32 @@ impl App {
         }
         if let Some(cust) = deposit {
             self.pay_dlg = Some((true, cust, String::new(), today()));
+        }
+        if let Some((id, number, payment)) = self.inv_confirm {
+            let m = egui::Modal::new(egui::Id::unique("inv_confirm")).show(ui.ctx(), |ui| {
+                let title = if payment { format!("Remove the last payment on invoice #{number}?") } else { format!("Delete invoice #{number}?") };
+                ui.label(RichText::new(title).font(ui::semibold(18.0)));
+                ui::label(ui, if payment { "Its money comes back out of the bank account and the invoice is open again." } else { "Its sale comes out of your books. Its quote and billed time become open again, so you can redo it." });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let yes = ui.add(egui::Button::new(RichText::new(if payment { "Remove" } else { "Delete" }).color(egui::Color32::WHITE)).fill(MONEY_OUT)).clicked();
+                    (yes, ui.button("Cancel").clicked())
+                })
+                .inner
+            });
+            let (yes, no) = m.inner;
+            if yes {
+                if payment {
+                    let r = self.books.delete_last_payment(id);
+                    self.done(r, &format!("Removed the last payment on invoice #{number}."));
+                } else {
+                    let r = self.books.delete_invoice(id);
+                    self.done(r, &format!("Deleted invoice #{number}."));
+                }
+            }
+            if yes || no || m.should_close() {
+                self.inv_confirm = None;
+            }
         }
         if let Some(id) = apply {
             let r = self.books.apply_deposit(id, &now);
@@ -2439,16 +2481,17 @@ impl App {
                         ui.add(egui::DragValue::new(&mut self.m_cols[i]).range(1..=50));
                     }
                     ui.checkbox(&mut self.m_header, "First row is a header");
+                    ui.checkbox(&mut self.m_flip, "Flip signs").on_hover_text("For card exports that show charges as positive numbers");
                 });
                 ui.end_row();
             });
-            ui::label(ui, "The amount column must be signed: deposits positive, withdrawals negative. Re-importing the same file is safe.");
+            ui::label(ui, "The amount column must be signed: deposits positive, withdrawals negative (tick Flip signs if your file is the other way round). Re-importing the same file is safe.");
             if ui::primary(ui, "Import") {
                 let path = self.m_path.trim().trim_matches('"');
                 let r = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| {
                     let text = String::from_utf8_lossy(&bytes);
                     let [d, m, a] = self.m_cols.map(|c| c - 1);
-                    self.books.import_csv(text.trim_start_matches('\u{feff}'), self.m_bank, self.m_header, d, m, a)
+                    self.books.import_csv(text.trim_start_matches('\u{feff}'), self.m_bank, self.m_header, d, m, a, self.m_flip)
                 });
                 let msg = match &r {
                     Ok((n, s)) => format!("Imported {n} rows, skipped {s} duplicates."),
@@ -4021,6 +4064,15 @@ impl App {
                 });
             } else {
                 ui::label(ui, "Done. Give each person their new password in person. An owner can set a different one for them any time above.");
+                ui.horizontal(|ui| {
+                    ui::label(ui, "The automatic backups still open with the old key.");
+                    if ui.button("Replace them with one new backup").clicked() {
+                        action = Some(Box::new(|a: &mut App| match extras::replace_backups(&a.books, &a.path) {
+                            Ok(n) => (Ok(()), format!("Deleted {n} old backups and made a new one with the new key. Copies you made yourself aren't touched.")),
+                            Err(e) => (Err(e), String::new()),
+                        }));
+                    }
+                });
                 egui::Grid::new("temps").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
                     for (name, pw) in &self.u_temps {
                         ui.label(name);

@@ -35,7 +35,8 @@ made-up business with a year of activity, and your own books aren't touched.
   copy wrapped with a key made from that person's password (Argon2id). The key file (`.keys`) sits
   beside the books and is needed to open them, so back up both.
 - **Logins:** an owner, plus optional bookkeeper and view-only logins. The app locks itself after
-  15 minutes without use.
+  15 minutes without use. Roles prevent mistakes, not a determined insider: every login unlocks the same file, so
+  only give logins to people you trust with the books.
 - **Recovery key:** shown once when you protect your books. If every owner forgets their password, it
   is the only way back in. Nobody, including the authors, can recover your books without it.
 - **Removing someone:** their login stops working at once. If they might have kept a copy of the

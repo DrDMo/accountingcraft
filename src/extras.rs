@@ -660,7 +660,17 @@ pub fn auto_backup(books: &Books, db_path: &str) -> std::result::Result<std::pat
     if keys.exists() {
         std::fs::copy(&keys, crate::lock::keys_path(&dest.to_string_lossy())).map_err(|e| e.to_string())?;
     }
-    let mut old: Vec<_> = std::fs::read_dir(&dir)
+    let old = backups(&dir, stem)?;
+    for p in old.iter().take(old.len().saturating_sub(30)) {
+        let _ = std::fs::remove_file(p);
+        let _ = std::fs::remove_file(crate::lock::keys_path(&p.to_string_lossy()));
+    }
+    Ok(dest)
+}
+
+/// This books file's automatic backups, oldest first.
+fn backups(dir: &std::path::Path, stem: &str) -> std::result::Result<Vec<std::path::PathBuf>, String> {
+    let mut old: Vec<_> = std::fs::read_dir(dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))
         // Exactly "{stem}-YYYYMMDD-HHMMSS.db", so "acme-llc" backups don't count as "acme" ones.
@@ -671,11 +681,21 @@ pub fn auto_backup(books: &Books, db_path: &str) -> std::result::Result<std::pat
         })
         .collect();
     old.sort(); // timestamped names sort oldest first
-    for p in old.iter().take(old.len().saturating_sub(30)) {
-        let _ = std::fs::remove_file(p);
+    Ok(old)
+}
+
+/// After changing the encryption key: makes a backup with the new key, then deletes every older
+/// automatic backup (they open with the old key). Returns how many were deleted.
+pub fn replace_backups(books: &Books, db_path: &str) -> std::result::Result<usize, String> {
+    let fresh = auto_backup(books, db_path)?;
+    let dir = fresh.parent().ok_or("no backups folder")?;
+    let stem = std::path::Path::new(db_path).file_stem().and_then(|s| s.to_str()).unwrap_or("books");
+    let old: Vec<_> = backups(dir, stem)?.into_iter().filter(|p| *p != fresh).collect();
+    for p in &old {
+        std::fs::remove_file(p).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(crate::lock::keys_path(&p.to_string_lossy()));
     }
-    Ok(dest)
+    Ok(old.len())
 }
 
 #[cfg(test)]
@@ -694,9 +714,9 @@ mod tests {
         let shell = b.add_vendor("Shell", "").unwrap();
 
         // Rules apply on import and retroactively.
-        b.import_csv("Date,Desc,Amt\n01/02/2026,COFFEE,-4.00\n", chk, true, 0, 1, 2).unwrap();
+        b.import_csv("Date,Desc,Amt\n01/02/2026,COFFEE,-4.00\n", chk, true, 0, 1, 2, false).unwrap();
         b.add_rule("shell", fuel, Some(shell), None).unwrap();
-        b.import_csv("Date,Desc,Amt\n01/03/2026,SHELL OIL 123,-40.00\n", chk, true, 0, 1, 2).unwrap();
+        b.import_csv("Date,Desc,Amt\n01/03/2026,SHELL OIL 123,-40.00\n", chk, true, 0, 1, 2, false).unwrap();
         let e = b.entries().unwrap();
         let gas = e.iter().find(|e| e.memo.starts_with("SHELL")).unwrap();
         assert_eq!((gas.lines[1].1, gas.vendor), (fuel, Some(shell)));
