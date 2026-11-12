@@ -1,0 +1,97 @@
+name: Release
+
+# Push a tag like v1.0.0 to build a draft release. Check it, then publish it on GitHub.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x64
+          - os: ubuntu-22.04 # older glibc, so the binary runs on more distributions
+            target: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      CRAFT_FONTS_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          path: craft-fonts
+          sparse-checkout: |
+            fonts/latin-manifest.txt
+            fonts/inter
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Version from the tag
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          grep -q "^version = \"$v\"" Cargo.toml || { echo "Tag $GITHUB_REF_NAME doesn't match Cargo.toml's version"; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "CRAFT_FONTS_DIR=$GITHUB_WORKSPACE/craft-fonts" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked
+
+      # Optional: signs the Windows exe when the Azure Trusted Signing secrets are set.
+      - name: Sign (Azure Trusted Signing)
+        if: runner.os == 'Windows' && env.AZURE_CLIENT_ID != ''
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files-folder: target/release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Package (Windows portable zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = "AccountingCraft"
+          New-Item -ItemType Directory $dir | Out-Null
+          Copy-Item target/release/AccountingCraft.exe, README.md, LICENSE-MIT, LICENSE-APACHE, ATTRIBUTION.md $dir
+          Compress-Archive -Path $dir -DestinationPath "accountingcraft-$env:VERSION-windows-x64-portable.zip"
+      - name: Package (Linux tarball)
+        if: runner.os == 'Linux'
+        run: |
+          root=pkg
+          install -Dm755 target/release/AccountingCraft "$root/bin/accountingcraft"
+          install -Dm644 packaging/linux/accountingcraft.desktop "$root/share/applications/accountingcraft.desktop"
+          install -Dm644 assets/app-icon/hicolor/128x128/apps/accountingcraft.png "$root/share/icons/hicolor/128x128/apps/accountingcraft.png"
+          install -Dm644 -t "$root/share/doc/accountingcraft" README.md LICENSE-MIT LICENSE-APACHE ATTRIBUTION.md
+          tar -C "$root" -czf "accountingcraft-$VERSION-linux-x86_64.tar.gz" bin share
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: accountingcraft-*
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: sha256sum accountingcraft-* > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --title "AccountingCraft ${GITHUB_REF_NAME#v}" --generate-notes accountingcraft-* SHA256SUMS.txt

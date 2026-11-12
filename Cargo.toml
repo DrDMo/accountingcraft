@@ -1,0 +1,38 @@
+[package]
+name = "accountingcraft"
+version = "1.0.0"
+edition = "2024"
+description = "Simple, private bookkeeping for solopreneurs: invoices, banking, reports and taxes in one encrypted file."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/DrDMo/accountingcraft"
+readme = "README.md"
+keywords = ["accounting", "bookkeeping", "invoices", "egui"]
+categories = ["finance"]
+
+[[bin]]
+name = "AccountingCraft"
+path = "src/main.rs"
+
+[dependencies]
+argon2 = "0.5.3"
+base64 = "0.23.1"
+chrono = "0.4.45"
+csv = "1.4.0"
+eframe = "0.37.0"
+epaint_default_fonts = "0.37.0"
+getrandom = "0.3.4"
+egui_extras = { version = "0.37", features = ["datepicker"] }
+jiff = "0.2.43"
+rfd = "0.18.0"
+rusqlite = { version = "0.42.0", features = ["bundled-sqlcipher-vendored-openssl"] }
+serde_json = "1.0.154"
+# No webpki-roots: certificates come from the system (platform-verifier), and its CDLA licence is off the Craft allowlist.
+ureq = { version = "3.5.1", default-features = false, features = ["rustls-no-provider", "_ring", "gzip", "platform-verifier"] }
+krilla = "0.8.2"
+ttf-parser = "0.25"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[build-dependencies]
+winresource = "0.1.34"

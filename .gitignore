@@ -1,0 +1,16 @@
+/target/
+/backups/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.keys
+*.keys.tmp
+*.encrypting
+*.unencrypted
+# Never commit recovery keys or exported text
+*recovery key*.txt
+artcraft-questions.md
+
+# Private planning notes
+PLAN.md

@@ -1,0 +1,40 @@
+# License check: `cargo deny check licenses`. The allow list is the Craft house-rules allowlist.
+[graph]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "ISC",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Apache-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "Bitstream-Vera",
+    "CC0-1.0",
+    "CC-BY-4.0",
+    "CC-BY-SA-4.0",
+    # Unicode's data licence, on ~20 ICU/unicode crates every egui app pulls in (MailCraft allows it too).
+    "Unicode-3.0",
+]
+
+# The rest come in through egui/eframe, the same as in every Craft app (MailCraft's deny.toml
+# allows them too): BSL-1.0 (clipboard-win), Zlib (foldhash).
+[[licenses.exceptions]]
+name = "clipboard-win"
+allow = ["BSL-1.0"]
+[[licenses.exceptions]]
+name = "error-code"
+allow = ["BSL-1.0"]
+[[licenses.exceptions]]
+name = "foldhash"
+allow = ["Zlib"]
+
+# SQLCipher's bundled source: SQLite is public domain (the "blessing"), libtomcrypt is
+# public domain/WTFPL. Both are public-domain dedications (LicenseRef-Public-Domain in spirit).
+[[licenses.exceptions]]
+name = "sqlcipher-src"
+allow = ["blessing", "WTFPL"]

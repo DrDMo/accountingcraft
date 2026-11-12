@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=AccountingCraft
+Comment=Simple, private bookkeeping for solopreneurs
+Exec=accountingcraft %f
+Icon=accountingcraft
+Categories=Office;Finance;
+Terminal=false
