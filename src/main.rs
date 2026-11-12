@@ -105,6 +105,9 @@ struct App {
     u_role: lock::Role,
     u_my_pw: String,
     u_recovery: Option<String>,
+    /// Receipts dragged onto the window, waiting to be matched to a transaction: (file name, bytes).
+    receipts: Vec<(String, Vec<u8>)>,
+    receipt_search: String,
     /// A transaction about to be deleted: its description and a copy, so the history can undo it.
     undo_next: Option<(String, String)>,
     /// The database's change counter when the history was last written; more means something was saved.
@@ -339,6 +342,8 @@ impl App {
             u_role: lock::Role::Bookkeeper,
             u_my_pw: String::new(),
             u_recovery: None,
+            receipts: vec![],
+            receipt_search: String::new(),
             undo_next: None,
             logged: 0,
             u_rot_pw: String::new(),
@@ -979,6 +984,7 @@ impl eframe::App for App {
 impl App {
     /// The help pop-up and the tutorial panel, drawn over whatever screen is showing.
     fn overlays(&mut self, ctx: &egui::Context) {
+        self.dropped_receipts(ctx);
         if let Some(key) = self.help_topic {
             let t = help::topic(key);
             let mut open = true;
@@ -1063,6 +1069,74 @@ impl App {
         self.tour = Some((i, 0));
         self.help_topic = None;
         self.screen = screen_of(help::TUTORIALS[i].steps[0].screen);
+    }
+
+    /// Receipts dragged onto the window: say what dropping does while they hover, then ask which
+    /// spending transaction each one belongs to.
+    fn dropped_receipts(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            let r = ctx.content_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("drop-hint")));
+            painter.rect_filled(r, 0.0, egui::Color32::from_black_alpha(150));
+            painter.text(r.center(), egui::Align2::CENTER_CENTER, "Drop receipts to attach them to transactions", ui::semibold(26.0), egui::Color32::WHITE);
+        }
+        for f in ctx.input(|i| i.raw.dropped_files.clone()) {
+            let name = f.path().file_name().map_or("receipt".to_string(), |n| n.to_string_lossy().to_string());
+            let lower = name.to_lowercase();
+            let kind_ok = [".pdf", ".png", ".jpg", ".jpeg", ".heic", ".webp", ".gif"].iter().any(|e| lower.ends_with(e));
+            match f.bytes().ok() {
+                Some(data) if kind_ok => self.receipts.push((name, data)),
+                _ => self.status = format!("Error: {name} isn't a PDF or picture, so it can't be kept as a receipt."),
+            }
+        }
+        let Some(name) = self.receipts.first().map(|r| r.0.clone()) else { return };
+        // Spending without a receipt yet, newest first: (id, date, memo, amount spent).
+        let kind = |id: i64| self.account(id).map_or("", |a| a.kind.as_str());
+        let q = self.receipt_search.trim().to_lowercase();
+        let mut spends: Vec<(i64, &str, &str, i64)> = self
+            .entries
+            .iter()
+            .filter(|e| !e.receipt && !e.invoice)
+            .map(|e| (e.id, e.date.as_str(), e.memo.as_str(), e.lines.iter().filter(|l| kind(l.1) == "expense" && l.2 > 0).map(|l| l.2).sum::<i64>()))
+            .filter(|s| s.3 > 0 && (q.is_empty() || s.2.to_lowercase().contains(&q) || fmt_cents(s.3).contains(&q)))
+            .collect();
+        spends.sort_by(|a, b| b.1.cmp(a.1));
+        let (mut pick, mut skip) = (None, false);
+        let left = self.receipts.len();
+        egui::Window::new("Attach a receipt").collapsible(false).resizable(true).default_width(640.0).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            ui::label(ui, &format!("Which purchase is \"{name}\" for?{}", if left > 1 { format!(" ({} more after this one)", left - 1) } else { String::new() }));
+            ui.add_space(4.0);
+            field(ui, &mut self.receipt_search, 320.0, "Search by description or amount");
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                if spends.is_empty() {
+                    ui::label(ui, "No spending without a receipt matches. Add the transaction first, then drop the receipt again.");
+                }
+                egui::Grid::new("receipt-pick").striped(true).num_columns(4).spacing([18.0, 6.0]).show(ui, |ui| {
+                    for (id, date, memo, cents) in spends.iter().take(60) {
+                        ui.label(nice_dates(date));
+                        ui.label(*memo);
+                        ui.label(fmt_cents(*cents));
+                        if ui::primary(ui, "Attach") {
+                            pick = Some(*id);
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            skip = ui.button(if left > 1 { "Skip this one" } else { "Cancel" }).clicked();
+        });
+        if let Some(id) = pick {
+            let (name, data) = self.receipts.remove(0);
+            let r = self.books.attach(id, &name, &data);
+            self.done(r, &format!("Attached the receipt {name}."));
+        } else if skip {
+            self.receipts.remove(0);
+        }
+        if pick.is_some() || skip {
+            self.receipt_search.clear();
+        }
     }
 
     fn history_ui(&mut self, ui: &mut egui::Ui) {

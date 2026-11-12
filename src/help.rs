@@ -51,6 +51,7 @@ pub fn topic(screen: &str) -> Topic {
                 ("The register", &[
                     "Change a category, job or vendor right in the row; it saves at once.",
                     "Edit fixes the date, description, amount or account, and holds the receipt (📎).",
+                    "Quicker: drag receipts (PDFs or photos) from your computer onto the window, then pick the purchase each one belongs to.",
                     "Search and filters narrow the list; \"Put everything shown on job\" tags many at once.",
                     "Invoices, payments and reconciled items are protected; change them from their own screens.",
                 ]),
