@@ -962,7 +962,7 @@ impl eframe::App for App {
                     // Groups ("" = a top-level item). Banking and Setup start closed; open/closed is remembered while the app runs.
                     const NAV: [(&str, &[(Screen, &str)]); 7] = [
                         ("", &[(Screen::Home, "Home")]),
-                        ("Sales", &[(Screen::Invoices, "Quotes & Invoices"), (Screen::Jobs, "Jobs & Time"), (Screen::Proposals, "Proposals")]),
+                        ("Sales", &[(Screen::Jobs, "Jobs & Time"), (Screen::Invoices, "Quotes & Invoices"), (Screen::Proposals, "Proposals")]),
                         ("Spending", &[(Screen::Purchases, "Purchase Orders"), (Screen::Mileage, "Mileage"), (Screen::Assets, "Assets")]),
                         ("Banking", &[(Screen::Transactions, "Transactions"), (Screen::Reconcile, "Reconcile"), (Screen::Import, "Import & Rules")]),
                         ("", &[(Screen::Reports, "Reports")]),
