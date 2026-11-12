@@ -960,7 +960,7 @@ impl eframe::App for App {
                         ("", &[(Screen::Home, "Home")]),
                         ("Sales", &[(Screen::Invoices, "Quotes & Invoices"), (Screen::Jobs, "Jobs & Time"), (Screen::Proposals, "Proposals")]),
                         ("Spending", &[(Screen::Purchases, "Purchase Orders"), (Screen::Mileage, "Mileage"), (Screen::Assets, "Assets")]),
-                        ("Banking", &[(Screen::Transactions, "Transactions"), (Screen::Import, "Import & Rules"), (Screen::Reconcile, "Reconcile")]),
+                        ("Banking", &[(Screen::Transactions, "Transactions"), (Screen::Reconcile, "Reconcile"), (Screen::Import, "Import & Rules")]),
                         ("", &[(Screen::Reports, "Reports")]),
                         ("Setup", &[(Screen::People, "Customers & Vendors"), (Screen::Accounts, "Chart of Accounts"), (Screen::Business, "Business & Settings"), (Screen::History, "Change history")]),
                         ("", &[(Screen::Help, "Help & Tutorials")]),
