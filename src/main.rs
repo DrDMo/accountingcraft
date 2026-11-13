@@ -1052,7 +1052,7 @@ impl App {
             egui::Area::new(egui::Id::unique("toast")).order(egui::Order::Tooltip).fixed_pos(*pos + egui::vec2(16.0, 16.0)).interactable(false).show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_max_width(380.0);
-                    ui.label(RichText::new(format!("{} {msg}", if *ok { "✔" } else { "✖" })).color(if *ok { MONEY_IN } else { MONEY_OUT }));
+                    ui.label(RichText::new(format!("{} {msg}", if *ok { "✓" } else { "✗" })).color(if *ok { MONEY_IN } else { MONEY_OUT }));
                 });
             });
             ctx.request_repaint_after(std::time::Duration::from_millis(250)); // so it goes away on time
@@ -1124,7 +1124,7 @@ impl App {
                     ui.horizontal(|ui| {
                         back = si > 0 && ui.button("← Back").clicked();
                         let last = si + 1 == t.steps.len();
-                        next = ui::primary(ui, if last { "Done ✔" } else { "Next →" });
+                        next = ui::primary(ui, if last { "Done ✓" } else { "Next →" });
                         ui.add_space(16.0);
                         quit = ui.small_button("Exit tour").clicked();
                     });
@@ -1233,7 +1233,7 @@ impl App {
             ui::label(ui, "Three steps and your books show real numbers. Each one ticks itself off.");
             ui.add_space(6.0);
             let mark = |ui: &mut egui::Ui, done: bool, n: usize, title: &str| {
-                let (icon, color) = if done { ("✔".to_string(), MONEY_IN) } else { (format!("{n}."), ui::pal(ui).weak) };
+                let (icon, color) = if done { ("✓".to_string(), MONEY_IN) } else { (format!("{n}."), ui::pal(ui).weak) };
                 ui.label(RichText::new(icon).color(color).font(ui::semibold(16.0)));
                 ui.label(RichText::new(title).font(ui::semibold(16.0)));
             };
@@ -1475,7 +1475,7 @@ impl App {
                 }
             }
             if todo == 0 {
-                ui.label(RichText::new("All caught up ✔").color(MONEY_IN));
+                ui.label(RichText::new("All caught up ✓").color(MONEY_IN));
             }
         });
         if tour {
@@ -1962,7 +1962,7 @@ impl App {
                     ui::label(ui, &format!("{} to {} (or set From / To above)", self.r_from, self.r_to));
                 });
                 match package::issues(&self.books, &self.r_from.to_string(), &self.r_to.to_string()) {
-                    Ok(list) if list.is_empty() => drop(ui.label(RichText::new("✔ Ready: categorized, reconciled and locked.").color(MONEY_IN))),
+                    Ok(list) if list.is_empty() => drop(ui.label(RichText::new("✓ Ready: categorized, reconciled and locked.").color(MONEY_IN))),
                     Ok(list) => {
                         ui.label(RichText::new("Before you send it (or send it anyway; the read-me lists these):").color(MONEY_OUT));
                         for i in list {
@@ -2322,10 +2322,12 @@ impl App {
                         }
                         amount_cell(ui, fmt_cents(i.cents));
                         if i.paid {
-                            amount_cell(ui, RichText::new("Paid ✔").color(MONEY_IN));
+                            amount_cell(ui, RichText::new("Paid ✓").color(MONEY_IN));
                         } else {
                             amount_cell(ui, fmt_cents(i.balance()));
                         }
+                        // One cell for the buttons, so rows with different buttons still line up.
+                        ui.horizontal(|ui| {
                         if ui.button("View / print").clicked() {
                             view = Some((books::Doc::Invoice, i.id));
                         }
@@ -2352,6 +2354,7 @@ impl App {
                                 self.inv_confirm = Some((i.id, i.number, false));
                             }
                         }
+                        });
                         ui.end_row();
                     }
                 });
@@ -2770,7 +2773,7 @@ impl App {
                     ui.label(format!("Invoice #{}", i.number));
                     ui.label(nice_dates(&i.date));
                     if i.paid {
-                        ui.label(RichText::new("Paid ✔").color(MONEY_IN));
+                        ui.label(RichText::new("Paid ✓").color(MONEY_IN));
                     } else if i.overdue(&now) {
                         ui.label(RichText::new(format!("Overdue, {} owed", fmt_cents(i.balance()))).color(MONEY_OUT));
                     } else {
@@ -3481,7 +3484,7 @@ impl App {
                         amount_cell(ui, fmt_cents(p.total));
                         match (p.status.as_str(), p.owed) {
                             ("received", true) => ui.label(RichText::new(format!("Received {}, bill to pay", nice_dates(&p.received))).color(MONEY_OUT)),
-                            ("received", false) => ui.label(RichText::new(format!("Received {}, paid ✔", nice_dates(&p.received))).color(MONEY_IN)),
+                            ("received", false) => ui.label(RichText::new(format!("Received {}, paid ✓", nice_dates(&p.received))).color(MONEY_IN)),
                             ("cancelled", _) => ui.label(RichText::new("Cancelled").color(ui::pal(ui).weak)),
                             _ => ui.label("Open"),
                         };
@@ -3769,7 +3772,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(format!("{y}: {}", fmt_cents(amount)));
                     if booked {
-                        ui.label(RichText::new("booked ✔").color(MONEY_IN));
+                        ui.label(RichText::new("booked ✓").color(MONEY_IN));
                     } else if amount > 0 && ui.button(format!("Book {y} depreciation")).clicked() {
                         book = Some(y);
                     }
