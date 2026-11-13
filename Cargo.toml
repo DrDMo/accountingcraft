@@ -1,6 +1,6 @@
 [package]
 name = "accountingcraft"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 description = "Simple, private bookkeeping for solopreneurs: invoices, banking, reports and taxes in one encrypted file."
 license = "MIT OR Apache-2.0"
