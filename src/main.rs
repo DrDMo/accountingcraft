@@ -4359,6 +4359,10 @@ fn open_sample() -> Result<(String, lock::Session), String> {
 
 impl eframe::App for Root {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if ui.ctx().cumulative_frame_nr() == 3 {
+            // Windows paints a dark title bar's text dark (invisible) until the theme is re-applied once the window is up.
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::SystemDefault));
+        }
         let theme = ui.ctx().options(|o| o.theme_preference);
         if theme != self.theme {
             self.theme = theme;
